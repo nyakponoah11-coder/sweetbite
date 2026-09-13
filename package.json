@@ -1,7 +1,7 @@
 {
-  "name": "stoney-shop-food-bot",
+  "name": "sweet-bite-food-bot",
   "version": "1.0.0",
-  "description": "WhatsApp food ordering bot for Stoney Shop",
+  "description": "WhatsApp food ordering bot for Sweet Bite (LAPAZ branch)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,11 +11,12 @@
     "whatsapp",
     "whatsapp-cloud-api",
     "food-ordering",
-    "stoney-shop",
+    "sweet-bite",
+    "lapaz",
     "nodejs",
     "express"
   ],
-  "author": "Stoney Shop",
+  "author": "Sweet Bite",
   "license": "MIT",
   "dependencies": {
     "@supabase/supabase-js": "^2.57.0",
