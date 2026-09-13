@@ -1,134 +1,50 @@
-# 🍛 Stoney Shop WhatsApp Food Ordering Bot
+# 🍛 Sweet Bite WhatsApp Food Ordering Bot
 
-A WhatsApp Cloud API food ordering bot for Stoney Shop.
+A WhatsApp Cloud API food ordering bot for **Sweet Bite**.
 
 Customers can:
 
-- Select their nearest branch
-- Select food
-- Select food amount
-- Select multiple proteins
+- Say "Hi" and see the menu right away
+- Select Jollof Rice or Fried Rice
+- Select a price
 - Choose pickup or delivery
-- Provide delivery address
+- Provide a delivery address
 - Confirm their order
 - Receive order status notifications
 
-There is no online payment.
-
-Delivery orders are paid on delivery.
-
-## Branch Reports
-
-A branch can send `report` from its configured WhatsApp number and choose `Daily`,
-`Weekly`, or `Monthly`. The bot sends back a PDF containing the orders and total
-sales for that branch and period.
-
-Reports use Supabase when these environment variables are configured:
-
-```text
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-```
-
-Run [supabase/schema.sql](supabase/schema.sql) once in the Supabase SQL Editor.
-The service-role key must stay on the server and must not be exposed in a browser.
+There is no online payment. Delivery orders are paid on delivery.
 
 ---
 
-# 🏪 Branches
+# 🏪 Branch
 
-The bot currently supports:
+There is only **one** branch: **LAPAZ**.
 
-1. Abeka
-2. Fadama
-3. Tabora
-5. GCTU
-6. Race
+There is no branch-selection step — every order goes straight to the LAPAZ
+branch number.
 
-Each branch has a different WhatsApp number.
-
-The bot uses one WhatsApp Cloud API account to send the messages.
-
-The branch numbers are simply recipients.
+The bot uses one WhatsApp Cloud API account to send messages. The LAPAZ
+branch number is simply the recipient that new orders are sent to, and the
+number staff use to request reports.
 
 ---
 
 # 🍽️ Food Menu
 
-## Fried Rice
+Only two items are on the menu:
 
-| Price | Chicken |
-|---|---|
-| ₵20 | 1 chicken |
-| ₵25 | 1 chicken |
-| ₵30 | 1 chicken |
-| ₵40 | 1 chicken |
-| ₵50 | 2 chicken |
+- Jollof Rice
+- Fried Rice
 
----
+## Prices
 
-## Jollof Rice
-
-| Price | Chicken |
-|---|---|
-| ₵20 | 1 chicken |
-| ₵25 | 1 chicken |
-| ₵30 | 1 chicken |
-| ₵40 | 1 chicken |
-| ₵50 | 2 chicken |
-
----
-
-## Fufu
-
-Customers can choose any base amount:
-
-₵10 - ₵100
-
----
-
-## Banku
-
-Customers can choose any base amount:
-
-₵10 - ₵100
-
----
-
-## Kokonte
-
-Customers can choose any base amount:
-
-₵10 - ₵100
-
----
-
-# 🥩 Proteins
-
-| Protein | Price |
-|---|---:|
-| Chicken | ₵15 |
-| Cow Intestines | ₵10 |
-| Fish | ₵20 |
-| Egg | ₵4 |
-
-Customers can add multiple proteins.
-
-For example:
-
-Fufu ₵30
-
-Chicken = ₵15
-
-Fish = ₵20
-
-Egg = ₵4
-
-Total:
-
-₵30 + ₵15 + ₵20 + ₵4
-
-= ₵69
+| Price   |
+|---------|
+| ₵30     |
+| ₵35     |
+| ₵40     |
+| ₵45     |
+| ₵50     |
 
 ---
 
@@ -138,17 +54,12 @@ Customers can select:
 
 ## Pick Up
 
-The customer comes to the selected branch.
-
-No delivery fee.
+The customer comes to the LAPAZ branch. No delivery fee.
 
 ## Delivery
 
-The customer provides their address.
-
-Payment is made to the rider when the food arrives.
-
-There is no Paystack integration.
+The customer provides their address. Payment is made to the rider when the
+food arrives. There is no online payment integration.
 
 ---
 
@@ -157,28 +68,66 @@ There is no Paystack integration.
 ```text
 Customer sends Hi
         ↓
-Welcome to Stoney Shop
+Welcome to Sweet Bite + Menu shown
         ↓
-Select Branch
+Select Food (Jollof Rice / Fried Rice)
         ↓
-Select Food
-        ↓
-Select Portion / Amount
-        ↓
-Select Protein
-        ↓
-Add More Protein
+Select Price (₵30 / ₵35 / ₵40 / ₵45 / ₵50)
         ↓
 Pick Up / Delivery
         ↓
-Delivery Address
+Delivery Address (if Delivery)
         ↓
 Order Summary
         ↓
 Place Order
         ↓
-Branch receives order
+Order sent to LAPAZ branch number
         ↓
 Branch prepares food
         ↓
-Customer receives status
+Customer receives status updates
+```
+
+---
+
+# 📊 Branch Reports
+
+The LAPAZ branch can send `report` from its configured WhatsApp number and
+choose `Daily`, `Weekly`, or `Monthly`. The bot generates and sends back a PDF
+containing the orders and total sales for that period.
+
+Reports use Supabase when these environment variables are configured:
+
+```text
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+```
+
+Run [supabase/schema.sql](supabase/schema.sql) once in the Supabase SQL
+Editor. The service-role key must stay on the server and must never be
+exposed in a browser.
+
+If Supabase isn't configured, reports fall back to in-memory orders from the
+current server session.
+
+---
+
+# ⚙️ Environment Variables
+
+```text
+PORT=10000
+WHATSAPP_ACCESS_TOKEN=
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_VERIFY_TOKEN=
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=
+
+STORE_NAME=Sweet Bite
+
+LAPAZ_BRANCH_NUMBER=
+```
+
+`LAPAZ_BRANCH_NUMBER` is the WhatsApp number of the LAPAZ branch — new orders
+and staff status buttons are sent there, and it's the number staff text
+`report` from.
