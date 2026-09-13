@@ -243,7 +243,7 @@ function generateOrderId() {
 function buildOrderSummary(session) {
   return `🛍️ *${STORE_NAME.toUpperCase()} ORDER*
 
-📍 Branch: ${BRANCH_NAME}
+📍 Location: ${BRANCH_NAME}
 🍽️ Food: ${session.food}
 💵 *TOTAL: ${money(calculateTotal(session))}*
 🚚 Method: ${session.fulfillment === "pickup" ? "Pick Up" : "Delivery — Pay on Delivery"}${session.fulfillment === "delivery" ? `\n📍 Address:\n${session.address}` : ""}`;
@@ -257,7 +257,7 @@ async function showFulfillmentOptions(to) {
     "🚚 How would you like to receive your food?",
     "Order Method",
     [
-      { id: "pickup",   title: "Pick Up",  description: "Come to the LAPAZ branch" },
+      { id: "pickup",   title: "Pick Up",  description: "Come to our LAPAZ location" },
       { id: "delivery", title: "Delivery", description: "Pay the rider on delivery" }
     ]
   );
@@ -324,7 +324,7 @@ async function showWelcome(to) {
   const message = `👋 *WELCOME TO ${STORE_NAME.toUpperCase()}!* 🍛
 
 We are happy to serve you.
-Enjoy delicious rice from our LAPAZ branch.
+Enjoy delicious rice from our LAPAZ location.
 
 🍚 Jollof Rice
 🍚 Fried Rice
@@ -366,7 +366,7 @@ async function placeCustomerOrder(from, session) {
   const branchSent = await sendOrderToBranch(order);
   if (!branchSent) {
     return sendWhatsAppText(from,
-      `❌ We couldn't send your order to the ${order.branch} branch.\n\nPlease try again later or send *hi* to restart.`
+      `❌ We couldn't send your order to the ${order.branch} location.\n\nPlease try again later or send *hi* to restart.`
     );
   }
 
@@ -378,13 +378,13 @@ async function placeCustomerOrder(from, session) {
     `🎉 *ORDER PLACED SUCCESSFULLY!*
 
 🆔 Order: ${order.id}
-📍 Branch: ${order.branch}
+📍 Location: ${order.branch}
 🍽️ Food: ${order.food}
 💵 Total: ${money(order.total)}
 🚚 Method: ${order.fulfillment === "pickup" ? "Pick Up" : "Delivery — Pay on Delivery"}${addressLine}
 ━━━━━━━━━━━━━━
 
-Your order has been sent to the branch.
+Your order has been sent to the location.
 We will notify you when your food is ready. ❤️`
   );
 
@@ -411,11 +411,11 @@ async function handleStaffAction(from, action, orderId) {
     order.status = "READY";
     if (order.fulfillment === "pickup") {
       await sendWhatsAppText(order.customerPhone,
-        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Branch: ${order.branch}\n🍽️ ${order.food}\n\nYour food is ready for pickup. 🍛\n\nYou can come to the branch and collect your order.\n\nThank you for ordering from ${STORE_NAME}! ❤️`
+        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food is ready for pickup. 🍛\n\nYou can come to the location and collect your order.\n\nThank you for ordering from ${STORE_NAME}! ❤️`
       );
     } else {
       await sendWhatsAppText(order.customerPhone,
-        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Branch: ${order.branch}\n🍽️ ${order.food}\n\nYour food has been prepared and is ready for delivery.\n\n🚚 Your rider will be on the way shortly.\n\n💵 Please remember: *PAY ON DELIVERY*.`
+        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food has been prepared and is ready for delivery.\n\n🚚 Your rider will be on the way shortly.\n\n💵 Please remember: *PAY ON DELIVERY*.`
       );
     }
 
@@ -434,7 +434,7 @@ async function handleStaffAction(from, action, orderId) {
   if (action === "rider") {
     order.status = "OUT_FOR_DELIVERY";
     await sendWhatsAppText(order.customerPhone,
-      `🚴 *YOUR RIDER IS ON THE WAY!*\n\n🆔 Order: ${order.id}\n📍 Branch: ${order.branch}\n\nYour food is on the way.\n\n💵 Payment: *PAY ON DELIVERY*\n\nPlease keep your phone available.\n\nThank you for ordering from ${STORE_NAME}! ❤️`
+      `🚴 *YOUR RIDER IS ON THE WAY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n\nYour food is on the way.\n\n💵 Payment: *PAY ON DELIVERY*\n\nPlease keep your phone available.\n\nThank you for ordering from ${STORE_NAME}! ❤️`
     );
     return sendWhatsAppText(from, `🚴 Order ${order.id} marked as *OUT FOR DELIVERY*.`);
   }
