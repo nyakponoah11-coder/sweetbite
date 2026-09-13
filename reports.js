@@ -125,7 +125,7 @@ function createReportPdf(branch, period, orders) {
     ];
 
     doc.rect(0, 0, 595, 108).fill("#17324D");
-    doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(22).text("JULJONES FOOD", 40, 28);
+    doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(22).text("SWEET BITE", 40, 28);
     doc.fontSize(11).font("Helvetica").fillColor("#B8DDE0").text("BRANCH PERFORMANCE REPORT", 40, 58);
     doc.font("Helvetica-Bold").fontSize(11).fillColor("#FFFFFF").text(branch, 420, 30, { width: 135, align: "right" });
     doc.font("Helvetica").fontSize(9).fillColor("#B8DDE0").text(period.toUpperCase(), 420, 50, { width: 135, align: "right" });
@@ -177,7 +177,7 @@ function createReportPdf(branch, period, orders) {
       });
     }
 
-    doc.fillColor("#6B7785").font("Helvetica").fontSize(8).text("Juljones Food - Confidential branch report", 40, 795, { width: 515, align: "center" });
+    doc.fillColor("#6B7785").font("Helvetica").fontSize(8).text("Sweet Bite - Confidential branch report", 40, 795, { width: 515, align: "center" });
 
     doc.end();
   });
