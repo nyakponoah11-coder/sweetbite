@@ -97,17 +97,75 @@ function pdfSafeText(value) {
   return String(value || "").replace(/[^\x20-\x7E]/g, "");
 }
 
-function drawTableHeader(doc, columns, y) {
+/*--------------------------------------------------------------------------
+ BRAND PALETTE — warm terracotta / amber, built for a food brand
+--------------------------------------------------------------------------*/
+const COLOR = {
+  headerBg:       "#5C2A1A",
+  headerAccent:   "#F3D9C4",
+  cream:          "#FBF3EA",
+  cardBorder:     "#EEDFCE",
+  darkText:       "#3B2A20",
+  mutedText:      "#8C7965",
+  tableHeaderBg:  "#3B2A20",
+  rowAlt:         "#FBF3EA",
+  ruleColor:      "#E7D6C4",
+  orders:         "#C2410C",
+  sales:          "#B45309",
+  average:        "#0F766E",
+  pickupBg:       "#FEF3C7",
+  pickupText:     "#92400E",
+  deliveryBg:     "#FCE7E4",
+  deliveryText:   "#9A3412"
+};
+
+const PAGE_WIDTH  = 595;
+const MARGIN      = 40;
+const CONTENT_W   = PAGE_WIDTH - MARGIN * 2;
+
+const COLUMNS = [
+  { label: "ORDER ID", x: 40,  width: 78 },
+  { label: "TIME",     x: 118, width: 46 },
+  { label: "CUSTOMER", x: 164, width: 88 },
+  { label: "DETAILS",  x: 252, width: 168 },
+  { label: "METHOD",   x: 420, width: 62 },
+  { label: "TOTAL",    x: 482, width: 73 }
+];
+
+function drawTableHeader(doc, y) {
   doc.save();
-  doc.rect(40, y, 515, 24).fill("#17324D");
+  doc.roundedRect(MARGIN, y, CONTENT_W, 26, 4).fill(COLOR.tableHeaderBg);
   doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(8);
-  columns.forEach(column => doc.text(column.label, column.x + 7, y + 8, { width: column.width - 14 }));
+  COLUMNS.forEach(column => doc.text(column.label, column.x + 8, y + 9, { width: column.width - 14 }));
+  doc.restore();
+}
+
+function drawMethodPill(doc, method, x, y, width) {
+  const isPickup = method === "pickup";
+  const label = isPickup ? "Pick up" : "Delivery";
+  const bg = isPickup ? COLOR.pickupBg : COLOR.deliveryBg;
+  const fg = isPickup ? COLOR.pickupText : COLOR.deliveryText;
+  const pillWidth = Math.min(width, doc.widthOfString(label) + 18);
+
+  doc.save();
+  doc.roundedRect(x, y, pillWidth, 16, 8).fill(bg);
+  doc.fillColor(fg).font("Helvetica-Bold").fontSize(7.5).text(label, x, y + 4.5, { width: pillWidth, align: "center" });
+  doc.restore();
+}
+
+function drawFooter(doc, pageNumber) {
+  const y = 776;
+  doc.save();
+  doc.moveTo(MARGIN, y).lineTo(PAGE_WIDTH - MARGIN, y).lineWidth(0.5).strokeColor(COLOR.ruleColor).stroke();
+  doc.fillColor(COLOR.mutedText).font("Helvetica").fontSize(8);
+  doc.text("Sweet Bite - Confidential order report", MARGIN, y + 8, { width: 300, lineBreak: false });
+  doc.text(`Page ${pageNumber}`, PAGE_WIDTH - MARGIN - 100, y + 8, { width: 100, align: "right", lineBreak: false });
   doc.restore();
 }
 
 function createReportPdf(branch, period, orders) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 40, size: "A4" });
+    const doc = new PDFDocument({ margin: MARGIN, size: "A4", bufferPages: true });
     const chunks = [];
     doc.on("data", chunk => chunks.push(chunk));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
@@ -115,70 +173,96 @@ function createReportPdf(branch, period, orders) {
 
     const total = orders.reduce((sum, order) => sum + Number(order.total || 0), 0);
     const average = orders.length ? total / orders.length : 0;
-    const columns = [
-      { label: "ORDER ID", x: 40, width: 82 },
-      { label: "TIME", x: 122, width: 52 },
-      { label: "CUSTOMER", x: 174, width: 90 },
-      { label: "ORDER DETAILS", x: 264, width: 160 },
-      { label: "METHOD", x: 424, width: 65 },
-      { label: "TOTAL", x: 489, width: 66 }
-    ];
+    const periodLabel = `${period[0].toUpperCase()}${period.slice(1)}`;
 
-    doc.rect(0, 0, 595, 108).fill("#17324D");
-    doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(22).text("SWEET BITE", 40, 28);
-    doc.fontSize(11).font("Helvetica").fillColor("#B8DDE0").text("BRANCH PERFORMANCE REPORT", 40, 58);
-    doc.font("Helvetica-Bold").fontSize(11).fillColor("#FFFFFF").text(branch, 420, 30, { width: 135, align: "right" });
-    doc.font("Helvetica").fontSize(9).fillColor("#B8DDE0").text(period.toUpperCase(), 420, 50, { width: 135, align: "right" });
-    doc.fillColor("#253B53").font("Helvetica-Bold").fontSize(16).text(`${period[0].toUpperCase()}${period.slice(1)} order report`, 40, 132);
-    doc.fillColor("#6B7785").font("Helvetica").fontSize(9).text(`Generated ${new Date().toLocaleString("en-GB")}`, 40, 155);
+    /*----------------------------- HEADER BAND -----------------------------*/
+    doc.rect(0, 0, PAGE_WIDTH, 112).fill(COLOR.headerBg);
+    doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(24).text("SWEET BITE", MARGIN, 30);
+    doc.fontSize(11).font("Helvetica").fillColor(COLOR.headerAccent).text("Order performance report", MARGIN, 62);
 
+    const badgeText = `${branch.toUpperCase()}  ·  ${periodLabel.toUpperCase()}`;
+    const badgeWidth = doc.widthOfString(badgeText) + 28;
+    const badgeX = PAGE_WIDTH - MARGIN - badgeWidth;
+    doc.save();
+    doc.fillOpacity(0.16).roundedRect(badgeX, 34, badgeWidth, 24, 12).fill("#FFFFFF");
+    doc.restore();
+    doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(9).text(badgeText, badgeX, 41, { width: badgeWidth, align: "center" });
+
+    doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(15).text(`${periodLabel} order report`, MARGIN, 128);
+    doc.fillColor(COLOR.mutedText).font("Helvetica").fontSize(9).text(`Generated ${new Date().toLocaleString("en-GB")}`, MARGIN, 150);
+
+    /*------------------------------ STAT CARDS -----------------------------*/
     const cards = [
-      { label: "ORDERS", value: String(orders.length), color: "#2A9D8F" },
-      { label: "TOTAL SALES", value: money(total), color: "#E08E0B" },
-      { label: "AVERAGE ORDER", value: money(average), color: "#457B9D" }
+      { label: "ORDERS",        value: String(orders.length), color: COLOR.orders },
+      { label: "TOTAL SALES",   value: money(total),           color: COLOR.sales },
+      { label: "AVERAGE ORDER", value: money(average),         color: COLOR.average }
     ];
+    const cardGap = 15;
+    const cardWidth = (CONTENT_W - cardGap * 2) / 3;
     cards.forEach((card, index) => {
-      const x = 40 + index * 172;
-      doc.roundedRect(x, 180, 160, 58, 5).fill("#F1F5F8");
-      doc.rect(x, 180, 5, 58).fill(card.color);
-      doc.fillColor("#6B7785").font("Helvetica-Bold").fontSize(8).text(card.label, x + 16, 193);
-      doc.fillColor("#17324D").font("Helvetica-Bold").fontSize(15).text(card.value, x + 16, 208, { width: 135 });
+      const x = MARGIN + index * (cardWidth + cardGap);
+      doc.roundedRect(x, 174, cardWidth, 60, 6).lineWidth(1).fillAndStroke(COLOR.cream, COLOR.cardBorder);
+      doc.roundedRect(x, 174, 4, 60, 2).fill(card.color);
+      doc.fillColor(COLOR.mutedText).font("Helvetica-Bold").fontSize(8).text(card.label, x + 16, 187, { width: cardWidth - 28 });
+      doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(16).text(card.value, x + 16, 202, { width: cardWidth - 28 });
     });
 
-    doc.fillColor("#253B53").font("Helvetica-Bold").fontSize(10).text("ORDER BREAKDOWN", 40, 270);
-    drawTableHeader(doc, columns, 288);
+    /*----------------------------- ORDER TABLE -----------------------------*/
+    doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(10).text("ORDER BREAKDOWN", MARGIN, 258);
+    drawTableHeader(doc, 276);
+    doc.y = 276 + 26 + 8;
 
     if (!orders.length) {
-      doc.fillColor("#6B7785").font("Helvetica").fontSize(10).text("No orders were placed during this period.", 47, 330);
+      doc.fillColor(COLOR.mutedText).font("Helvetica").fontSize(10)
+        .text("No orders were placed during this period.", MARGIN + 7, doc.y);
     } else {
       orders.forEach((order, index) => {
         const details = [pdfSafeText(order.food)];
+        if (order.includedChicken) details.push(`Includes ${order.includedChicken} chicken`);
         if (order.soup) details.push(`Soup: ${pdfSafeText(order.soup)}`);
         if (order.proteinSummary) details.push(pdfSafeText(order.proteinSummary).replace(/[\r\n]+/g, ", "));
         const detailText = details.join(" | ");
         const customer = pdfSafeText(order.customerPhone || order.customer_phone || "-");
-        const rowHeight = Math.max(34, doc.heightOfString(detailText, { width: 146 }) + 16);
+        const rowHeight = Math.max(36, doc.heightOfString(detailText, { width: 158 }) + 18);
 
-        if (doc.y + rowHeight > 760) {
+        if (doc.y + rowHeight > 745) {
+          drawFooter(doc, doc.bufferedPageRange().count);
           doc.addPage();
-          drawTableHeader(doc, columns, 48);
-          doc.y = 72;
+          drawTableHeader(doc, MARGIN);
+          doc.y = MARGIN + 26 + 8;
         }
 
         const y = doc.y;
-        if (index % 2 === 0) doc.rect(40, y, 515, rowHeight).fill("#F1F5F8");
-        doc.fillColor("#253B53").font("Helvetica-Bold").fontSize(8).text(pdfSafeText(order.id), 47, y + 10, { width: 68 });
-        doc.font("Helvetica").text(new Date(order.createdAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }), 129, y + 10, { width: 38 });
-        doc.text(customer, 181, y + 10, { width: 76 });
-        doc.text(detailText, 271, y + 8, { width: 146, lineGap: 2 });
-        doc.text(order.fulfillment === "pickup" ? "Pick up" : "Delivery", 431, y + 10, { width: 51 });
-        doc.font("Helvetica-Bold").text(money(order.total), 496, y + 10, { width: 52, align: "right" });
+        if (index % 2 === 0) doc.roundedRect(MARGIN, y - 2, CONTENT_W, rowHeight, 3).fill(COLOR.rowAlt);
+
+        doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(8).text(pdfSafeText(order.id), 48, y + 8, { width: 70 });
+        doc.fillColor(COLOR.mutedText).font("Helvetica").text(
+          new Date(order.createdAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+          118, y + 8, { width: 40 }
+        );
+        doc.fillColor(COLOR.darkText).text(customer, 164, y + 8, { width: 82 });
+        doc.text(detailText, 252, y + 6, { width: 158, lineGap: 2 });
+        drawMethodPill(doc, order.fulfillment, 420, y + 6, 58);
+        doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(9).text(money(order.total), 476, y + 8, { width: 79, align: "right" });
+
         doc.y = y + rowHeight;
       });
+
+      /*-------------------------- TOTAL SUMMARY ROW --------------------------*/
+      if (doc.y + 34 > 745) {
+        drawFooter(doc, doc.bufferedPageRange().count);
+        doc.addPage();
+        doc.y = MARGIN;
+      }
+      const totalY = doc.y + 8;
+      doc.moveTo(MARGIN, totalY).lineTo(PAGE_WIDTH - MARGIN, totalY).lineWidth(1).strokeColor(COLOR.ruleColor).stroke();
+      doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(10)
+        .text("TOTAL SALES", 252, totalY + 10, { width: 158 });
+      doc.fontSize(11).text(money(total), 476, totalY + 9, { width: 79, align: "right" });
+      doc.y = totalY + 34;
     }
 
-    doc.fillColor("#6B7785").font("Helvetica").fontSize(8).text("Sweet Bite - Confidential branch report", 40, 795, { width: 515, align: "center" });
-
+    drawFooter(doc, doc.bufferedPageRange().count);
     doc.end();
   });
 }
