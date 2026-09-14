@@ -28,13 +28,19 @@ const WA_URL =
 /*--------------------------------------------------------------------------
  BRANCH — only one branch, LAPAZ
 --------------------------------------------------------------------------*/
-const BRANCH_NAME = "LAPAZ";
+const BRANCH_NAME = "Lapaz";
 const BRANCH_NUMBER = LAPAZ_BRANCH_NUMBER;
 
 /*--------------------------------------------------------------------------
- MENU — Jollof Rice & Fried Rice only, prices ₵30 - ₵50
+ MENU — Jollof Rice & Fried Rice only, prices ₵30 - ₵50 (includes free chicken)
 --------------------------------------------------------------------------*/
-const PRICES = [30, 35, 40, 45, 50];
+const RICE_PORTIONS = [
+  { amount: 30, chicken: 1 },
+  { amount: 35, chicken: 1 },
+  { amount: 40, chicken: 2 },
+  { amount: 45, chicken: 2 },
+  { amount: 50, chicken: 2 }
+];
 
 const FOODS = {
   food_jollof: "Jollof Rice",
@@ -67,6 +73,7 @@ function getSession(phone) {
       step: "WELCOME",
       food: null,
       foodAmount: null,
+      includedChicken: 0,
       fulfillment: null,
       address: null,
       order: null
@@ -80,6 +87,7 @@ function resetSession(phone) {
     step: "WELCOME",
     food: null,
     foodAmount: null,
+    includedChicken: 0,
     fulfillment: null,
     address: null,
     order: null
@@ -210,10 +218,10 @@ function foodRows() {
 }
 
 function priceRows() {
-  return PRICES.map(amount => ({
-    id: `price_${amount}`,
-    title: money(amount),
-    description: "Tap to select this price"
+  return RICE_PORTIONS.map(portion => ({
+    id: `price_${portion.amount}`,
+    title: money(portion.amount),
+    description: `Includes ${portion.chicken} chicken`
   }));
 }
 
@@ -241,11 +249,12 @@ function generateOrderId() {
  ORDER SUMMARY
 --------------------------------------------------------------------------*/
 function buildOrderSummary(session) {
+  const chickenLine = session.includedChicken ? `🍗 Includes ${session.includedChicken} chicken\n` : "";
   return `🛍️ *${STORE_NAME.toUpperCase()} ORDER*
 
 📍 Location: ${BRANCH_NAME}
 🍽️ Food: ${session.food}
-💵 *TOTAL: ${money(calculateTotal(session))}*
+${chickenLine}💵 *TOTAL: ${money(calculateTotal(session))}*
 🚚 Method: ${session.fulfillment === "pickup" ? "Pick Up" : "Delivery — Pay on Delivery"}${session.fulfillment === "delivery" ? `\n📍 Address:\n${session.address}` : ""}`;
 }
 
@@ -257,7 +266,7 @@ async function showFulfillmentOptions(to) {
     "🚚 How would you like to receive your food?",
     "Order Method",
     [
-      { id: "pickup",   title: "Pick Up",  description: "Come to our LAPAZ location" },
+      { id: "pickup",   title: "Pick Up",  description: "Come to our Lapaz location" },
       { id: "delivery", title: "Delivery", description: "Pay the rider on delivery" }
     ]
   );
@@ -285,9 +294,11 @@ async function sendOrderConfirmation(to, session) {
 --------------------------------------------------------------------------*/
 async function sendOrderToBranch(order) {
   if (!BRANCH_NUMBER) {
-    console.error("No WhatsApp number configured for the LAPAZ branch");
+    console.error("No WhatsApp number configured for the Lapaz branch");
     return false;
   }
+
+  const chickenLine = order.includedChicken ? `🍗 Includes ${order.includedChicken} chicken\n` : "";
 
   const message = `🔔 *NEW ORDER*
 
@@ -295,7 +306,7 @@ async function sendOrderToBranch(order) {
 📍 Branch: ${order.branch}
 📱 Customer: ${order.customerPhone}
 🍽️ Food: ${order.food}
-━━━━━━━━━━━━━
+${chickenLine}━━━━━━━━━━━━━
 
 💵 *TOTAL: ${money(order.total)}*
 🚚 Method: ${order.fulfillment === "pickup" ? "PICK UP" : "DELIVERY — PAY ON DELIVERY"}${order.fulfillment === "delivery" ? `\n📍 DELIVERY ADDRESS:\n${order.address}` : ""}
@@ -324,7 +335,7 @@ async function showWelcome(to) {
   const message = `👋 *WELCOME TO ${STORE_NAME.toUpperCase()}!* 🍛
 
 We are happy to serve you.
-Enjoy delicious rice from our LAPAZ location.
+Enjoy delicious rice from our Lapaz location.
 
 🍚 Jollof Rice
 🍚 Fried Rice
@@ -349,6 +360,7 @@ async function placeCustomerOrder(from, session) {
     branch:        BRANCH_NAME,
     food:          session.food,
     basePrice:     calculateTotal(session),
+    includedChicken: session.includedChicken || 0,
     total:         calculateTotal(session),
     fulfillment:   session.fulfillment,
     address:       session.address || null,
@@ -373,6 +385,7 @@ async function placeCustomerOrder(from, session) {
   const addressLine = order.fulfillment === "delivery"
     ? `\n📍 Address: ${order.address}`
     : "";
+  const chickenLine = order.includedChicken ? `🍗 Includes ${order.includedChicken} chicken\n` : "";
 
   await sendWhatsAppText(from,
     `🎉 *ORDER PLACED SUCCESSFULLY!*
@@ -380,7 +393,7 @@ async function placeCustomerOrder(from, session) {
 🆔 Order: ${order.id}
 📍 Location: ${order.branch}
 🍽️ Food: ${order.food}
-💵 Total: ${money(order.total)}
+${chickenLine}💵 Total: ${money(order.total)}
 🚚 Method: ${order.fulfillment === "pickup" ? "Pick Up" : "Delivery — Pay on Delivery"}${addressLine}
 ━━━━━━━━━━━━━━
 
@@ -562,9 +575,11 @@ async function handleCustomerInteractive(from, message) {
   /*-- PRICE SELECTION --*/
   if (id.startsWith("price_")) {
     const amount = Number(id.replace("price_", ""));
-    if (!PRICES.includes(amount)) return;
+    const portion = RICE_PORTIONS.find(item => item.amount === amount);
+    if (!portion) return;
 
-    session.foodAmount = amount;
+    session.foodAmount = portion.amount;
+    session.includedChicken = portion.chicken;
     session.step = "FULFILLMENT";
     return showFulfillmentOptions(from);
   }
