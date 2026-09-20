@@ -677,9 +677,6 @@ app.get("/orders", (req, res) => res.json(Array.from(orders.values())));
 /*--------------------------------------------------------------------------
  START
 --------------------------------------------------------------------------*/
-app.get("/health", (req, res) => {
-  res.status(200).send("Bot is alive!");
-});
 app.listen(PORT, () => {
   console.log(`🍛 ${STORE_NAME} food bot running on port ${PORT}`);
   console.log("Branch:", BRANCH_NAME);
