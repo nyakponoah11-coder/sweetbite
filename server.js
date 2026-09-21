@@ -36,10 +36,9 @@ const BRANCH_NUMBER = LAPAZ_BRANCH_NUMBER;
 --------------------------------------------------------------------------*/
 const RICE_PORTIONS = [
   { amount: 30, chicken: 1 },
-  { amount: 35, chicken: 1 },
-  { amount: 40, chicken: 2 },
-  { amount: 45, chicken: 2 },
-  { amount: 50, chicken: 2 }
+  { amount: 40, chicken: 1 },
+  { amount: 50, chicken: 2 },
+  { amount: 60, chicken: 3 }
 ];
 
 const FOODS = {
