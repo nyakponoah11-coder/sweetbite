@@ -3,7 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const FormData = require("form-data");
-const { createReportPdf, getOrders, saveOrder } = require("./reports");
+const { createReportPdf, getOrders, saveOrder, updateOrderStatus } = require("./reports"); // ➕ ADDED updateOrderStatus
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -412,11 +412,30 @@ async function handleStaffAction(from, action, orderId) {
   const order = Array.from(orders.values()).find(item => item.id === orderId);
   if (!order) return sendWhatsAppText(from, `❌ Order ${orderId} was not found.`);
 
+  // ➕ ADDED: if the customer cancelled this order, the old staff buttons must not continue it
+  if (order.status === "CANCELLED") {
+    return sendWhatsAppText(from, `❌ Order ${order.id} was already CANCELLED by the customer. No further action needed.`);
+  }
+
   if (action === "prepare") {
     order.status = "PREPARING";
     await sendWhatsAppText(order.customerPhone,
       `👨‍🍳 *YOUR ORDER IS BEING PREPARED*\n\n🆔 ${order.id}\n🍽️ ${order.food}\n📍 ${order.branch}\n\nYour food is now being prepared.\n\nWe'll notify you when it is ready. ❤️`
     );
+
+    // ➕ ADDED: after the "preparing" message, ask the customer to choose: continue or cancel
+    try {
+      await sendButtons(order.customerPhone,
+        `🍛 Order ${order.id} is being prepared.\n\nDo you still want this order? Please choose below — once it is prepared, it will be served to you.`,
+        [
+          { id: `customer_continue_${order.id}`, title: "✅ Yes, Continue" },
+          { id: `customer_cancel_${order.id}`,   title: "❌ Cancel Order"  }
+        ]
+      );
+    } catch (error) {
+      console.error("CUSTOMER CONFIRM BUTTONS ERROR:", error.response?.data || error.message);
+    }
+
     return sendWhatsAppText(from, `👨‍🍳 Order ${order.id} is now marked as *PREPARING*.`);
   }
 
@@ -464,6 +483,73 @@ async function handleStaffAction(from, action, orderId) {
 }
 
 /*--------------------------------------------------------------------------
+ ➕ ADDED: CUSTOMER ANSWER AFTER "PREPARING" (continue / cancel)
+--------------------------------------------------------------------------*/
+async function handleCustomerOrderResponse(from, action, orderId) {
+  // Only the customer who placed the order can answer for it
+  const order = Array.from(orders.values()).find(
+    item => item.id === orderId && item.customerPhone === from
+  );
+  if (!order) return sendWhatsAppText(from, `❌ Order ${orderId} was not found.`);
+
+  if (order.status === "CANCELLED") {
+    return sendWhatsAppText(from, `Order ${order.id} has already been cancelled.`);
+  }
+
+  /*-- CUSTOMER STILL WANTS THE ORDER --*/
+  if (action === "continue") {
+    order.customerConfirmed = true;
+    return sendWhatsAppText(from,
+      `✅ *THANK YOU!*\n\n🆔 Order: ${order.id}\n\nYour order is confirmed. We will notify you when it is ready. ❤️`
+    );
+  }
+
+  /*-- CUSTOMER CANCELS --*/
+  if (action === "cancel") {
+    // Too late to cancel once the food is ready / on the way / collected
+    if (order.status !== "NEW" && order.status !== "PREPARING") {
+      return sendWhatsAppText(from,
+        `⚠️ Order ${order.id} can no longer be cancelled here because it is already *${order.status.replace(/_/g, " ")}*.\n\nPlease contact ${BRANCH_NAME} directly.`
+      );
+    }
+
+    order.status = "CANCELLED";
+    order.cancelledBy = "customer";
+    order.cancelledAt = new Date().toISOString();
+
+    // ➕ ADDED: save the cancellation so reports still show it after a restart
+    try {
+      await updateOrderStatus(order, "CANCELLED");
+    } catch (error) {
+      console.error("SUPABASE ORDER STATUS UPDATE ERROR:", error.message);
+    }
+
+    // Notify the branch first — this is the important part
+    try {
+      if (!BRANCH_NUMBER) throw new Error("No WhatsApp number configured for the Lapaz branch");
+      await sendWhatsAppText(normalizePhone(BRANCH_NUMBER),
+        `❌ *ORDER CANCELLED BY CUSTOMER*
+
+🆔 Order: ${order.id}
+📱 Customer: ${order.customerPhone}
+🍽️ Food: ${order.food}
+💵 Total: ${money(order.total)}
+🚚 Method: ${order.fulfillment === "pickup" ? "PICK UP" : "DELIVERY — PAY ON DELIVERY"}
+━━━━━━━━━━━━━━
+
+Please STOP preparing this order.`
+      );
+    } catch (error) {
+      console.error("BRANCH CANCEL NOTIFICATION ERROR:", error.response?.data || error.message);
+    }
+
+    return sendWhatsAppText(from,
+      `❌ *ORDER CANCELLED*\n\n🆔 ${order.id}\n\nYour order has been cancelled and ${BRANCH_NAME} has been notified.\n\nSend *hi* whenever you want to order again.`
+    );
+  }
+}
+
+/*--------------------------------------------------------------------------
  REPORTS
 --------------------------------------------------------------------------*/
 async function showReportOptions(to) {
@@ -485,8 +571,10 @@ async function sendBranchReport(to, period) {
     const pdf = await createReportPdf(BRANCH_NAME, period, reportOrders);
     const filename = `sweet-bite-${BRANCH_NAME.toLowerCase()}-${period}.pdf`;
 
+    // ➕ ADDED: mention cancelled orders in the chat message
+    const cancelledCount = reportOrders.filter(order => String(order.status || "").toUpperCase() === "CANCELLED").length;
     await sendWhatsAppText(to,
-      `📊 ${period[0].toUpperCase() + period.slice(1)} report for ${BRANCH_NAME}: ${reportOrders.length} order(s).`
+      `📊 ${period[0].toUpperCase() + period.slice(1)} report for ${BRANCH_NAME}: ${reportOrders.length} order(s)${cancelledCount ? ` (${cancelledCount} cancelled)` : ""}.`
     );
     return sendWhatsAppDocument(to, pdf, filename, `${BRANCH_NAME} ${period} order report`);
   } catch (error) {
@@ -622,6 +710,10 @@ async function handleInteractive(from, message) {
   if (id.startsWith("staff_ready_"))   return handleStaffAction(from, "ready",   id.replace("staff_ready_", ""));
   if (id.startsWith("staff_rider_"))   return handleStaffAction(from, "rider",   id.replace("staff_rider_", ""));
   if (id.startsWith("staff_pickup_"))  return handleStaffAction(from, "pickup",  id.replace("staff_pickup_", ""));
+
+  // ➕ ADDED: customer's answer after the "preparing" message
+  if (id.startsWith("customer_continue_")) return handleCustomerOrderResponse(from, "continue", id.replace("customer_continue_", ""));
+  if (id.startsWith("customer_cancel_"))   return handleCustomerOrderResponse(from, "cancel",   id.replace("customer_cancel_", ""));
 
   return handleCustomerInteractive(from, message);
 }
