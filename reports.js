@@ -28,6 +28,11 @@ function isInRange(order, range) {
   return createdAt >= range.start && createdAt < range.end;
 }
 
+// ➕ ADDED: single place that decides whether an order counts as cancelled
+function isCancelled(order) {
+  return String(order?.status || "").trim().toUpperCase() === "CANCELLED";
+}
+
 async function saveOrder(order) {
   if (!supabase) return;
   const { error } = await supabase.from("orders").insert({
@@ -46,6 +51,18 @@ async function saveOrder(order) {
     status: order.status,
     created_at: order.createdAt
   });
+  if (error) throw error;
+}
+
+// ➕ ADDED: saves a status change (e.g. CANCELLED) so reports still show it after a restart.
+// Matches on id AND created_at so two orders that share an id (same minute) are never mixed up.
+async function updateOrderStatus(order, status) {
+  if (!supabase) return;
+  const { error } = await supabase
+    .from("orders")
+    .update({ status })
+    .eq("id", order.id)
+    .eq("created_at", order.createdAt);
   if (error) throw error;
 }
 
@@ -79,10 +96,14 @@ async function getOrders(branch, period, fallbackOrders) {
     createdAt: order.created_at
   }));
 
-  const combined = [...storedOrders, ...localOrders];
+  // ➕ CHANGED: live (in-memory) orders now come FIRST so their newer status (e.g. CANCELLED)
+  // wins over the older copy stored in Supabase.
+  const combined = [...localOrders, ...storedOrders];
   const seen = new Set();
   return combined.filter(order => {
-    const key = `${order.id}|${order.createdAt}`;
+    // ➕ CHANGED: compare timestamps as numbers — Supabase returns "+00:00" while JS uses "Z",
+    // so comparing the raw strings could show the same order twice.
+    const key = `${order.id}|${new Date(order.createdAt).getTime()}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -116,7 +137,11 @@ const COLOR = {
   pickupBg:       "#FEF3C7",
   pickupText:     "#92400E",
   deliveryBg:     "#FCE7E4",
-  deliveryText:   "#9A3412"
+  deliveryText:   "#9A3412",
+  // ➕ ADDED: cancelled-order styling
+  cancelledBg:    "#FEE2E2",
+  cancelledText:  "#B91C1C",
+  cancelledRow:   "#FDF0EF"
 };
 
 const PAGE_WIDTH  = 595;
@@ -153,6 +178,17 @@ function drawMethodPill(doc, method, x, y, width) {
   doc.restore();
 }
 
+// ➕ ADDED: small red "CANCELLED" tag shown under the order ID
+function drawCancelledTag(doc, x, y) {
+  const label = "CANCELLED";
+  doc.save();
+  doc.font("Helvetica-Bold").fontSize(6.5);
+  const width = doc.widthOfString(label) + 12;
+  doc.roundedRect(x, y, width, 12, 6).fill(COLOR.cancelledBg);
+  doc.fillColor(COLOR.cancelledText).text(label, x, y + 3, { width, align: "center", lineBreak: false });
+  doc.restore();
+}
+
 function drawFooter(doc, pageNumber) {
   const y = 776;
   doc.save();
@@ -171,8 +207,13 @@ function createReportPdf(branch, period, orders) {
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
 
-    const total = orders.reduce((sum, order) => sum + Number(order.total || 0), 0);
-    const average = orders.length ? total / orders.length : 0;
+    // ➕ CHANGED: cancelled orders are listed in the table but NOT counted as sales
+    const activeOrders    = orders.filter(order => !isCancelled(order));
+    const cancelledOrders = orders.filter(order => isCancelled(order));
+    const cancelledTotal  = cancelledOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+
+    const total = activeOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+    const average = activeOrders.length ? total / activeOrders.length : 0;
     const periodLabel = `${period[0].toUpperCase()}${period.slice(1)}`;
 
     /*----------------------------- HEADER BAND -----------------------------*/
@@ -193,9 +234,9 @@ function createReportPdf(branch, period, orders) {
 
     /*------------------------------ STAT CARDS -----------------------------*/
     const cards = [
-      { label: "ORDERS",        value: String(orders.length), color: COLOR.orders },
-      { label: "TOTAL SALES",   value: money(total),           color: COLOR.sales },
-      { label: "AVERAGE ORDER", value: money(average),         color: COLOR.average }
+      { label: "ORDERS",        value: String(activeOrders.length), color: COLOR.orders },
+      { label: "TOTAL SALES",   value: money(total),                color: COLOR.sales },
+      { label: "AVERAGE ORDER", value: money(average),              color: COLOR.average }
     ];
     const cardGap = 15;
     const cardWidth = (CONTENT_W - cardGap * 2) / 3;
@@ -207,6 +248,14 @@ function createReportPdf(branch, period, orders) {
       doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(16).text(card.value, x + 16, 202, { width: cardWidth - 28 });
     });
 
+    // ➕ ADDED: cancelled summary line under the cards (only when there are cancellations)
+    if (cancelledOrders.length) {
+      doc.fillColor(COLOR.cancelledText).font("Helvetica-Bold").fontSize(8.5).text(
+        `${cancelledOrders.length} cancelled order(s) worth ${money(cancelledTotal)} - shown in red below and NOT counted in the totals above.`,
+        MARGIN, 241, { width: CONTENT_W, lineBreak: false }
+      );
+    }
+
     /*----------------------------- ORDER TABLE -----------------------------*/
     doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(10).text("ORDER BREAKDOWN", MARGIN, 258);
     drawTableHeader(doc, 276);
@@ -217,6 +266,8 @@ function createReportPdf(branch, period, orders) {
         .text("No orders were placed during this period.", MARGIN + 7, doc.y);
     } else {
       orders.forEach((order, index) => {
+        const cancelled = isCancelled(order);   // ➕ ADDED
+
         const details = [pdfSafeText(order.food)];
         if (order.includedChicken) details.push(`Includes ${order.includedChicken} chicken`);
         if (order.soup) details.push(`Soup: ${pdfSafeText(order.soup)}`);
@@ -233,17 +284,29 @@ function createReportPdf(branch, period, orders) {
         }
 
         const y = doc.y;
-        if (index % 2 === 0) doc.roundedRect(MARGIN, y - 2, CONTENT_W, rowHeight, 3).fill(COLOR.rowAlt);
+        // ➕ CHANGED: cancelled rows get a light red background instead of the cream striping
+        if (cancelled) doc.roundedRect(MARGIN, y - 2, CONTENT_W, rowHeight, 3).fill(COLOR.cancelledRow);
+        else if (index % 2 === 0) doc.roundedRect(MARGIN, y - 2, CONTENT_W, rowHeight, 3).fill(COLOR.rowAlt);
 
-        doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(8).text(pdfSafeText(order.id), 48, y + 8, { width: 70 });
-        doc.fillColor(COLOR.mutedText).font("Helvetica").text(
+        const mainText = cancelled ? COLOR.mutedText : COLOR.darkText;   // ➕ ADDED: greyed-out text for cancelled
+
+        doc.fillColor(mainText).font("Helvetica-Bold").fontSize(8).text(pdfSafeText(order.id), 48, y + 8, { width: 70 });
+        if (cancelled) drawCancelledTag(doc, 48, y + 21);   // ➕ ADDED
+        doc.fillColor(COLOR.mutedText).font("Helvetica").fontSize(8).text(
           new Date(order.createdAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
           118, y + 8, { width: 40 }
         );
-        doc.fillColor(COLOR.darkText).text(customer, 164, y + 8, { width: 82 });
+        doc.fillColor(mainText).text(customer, 164, y + 8, { width: 82 });
         doc.text(detailText, 252, y + 6, { width: 158, lineGap: 2 });
         drawMethodPill(doc, order.fulfillment, 420, y + 6, 58);
-        doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(9).text(money(order.total), 476, y + 8, { width: 79, align: "right" });
+
+        if (cancelled) {
+          // ➕ ADDED: cancelled amount is greyed out and struck through
+          doc.fillColor(COLOR.cancelledText).font("Helvetica").fontSize(9)
+            .text(money(order.total), 476, y + 8, { width: 79, align: "right", strike: true });
+        } else {
+          doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(9).text(money(order.total), 476, y + 8, { width: 79, align: "right" });
+        }
 
         doc.y = y + rowHeight;
       });
@@ -259,6 +322,11 @@ function createReportPdf(branch, period, orders) {
       doc.fillColor(COLOR.darkText).font("Helvetica-Bold").fontSize(10)
         .text("TOTAL SALES", 252, totalY + 10, { width: 158 });
       doc.fontSize(11).text(money(total), 476, totalY + 9, { width: 79, align: "right" });
+      // ➕ ADDED: reminder that cancelled orders are excluded
+      if (cancelledOrders.length) {
+        doc.fillColor(COLOR.mutedText).font("Helvetica").fontSize(7.5)
+          .text("Cancelled orders not counted", 252, totalY + 25, { width: 158, lineBreak: false });
+      }
       doc.y = totalY + 34;
     }
 
@@ -267,4 +335,4 @@ function createReportPdf(branch, period, orders) {
   });
 }
 
-module.exports = { createReportPdf, getOrders, getPeriodRange, saveOrder };
+module.exports = { createReportPdf, getOrders, getPeriodRange, saveOrder, updateOrderStatus };
