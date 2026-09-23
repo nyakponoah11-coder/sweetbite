@@ -16,6 +16,7 @@ const {
   WHATSAPP_VERIFY_TOKEN,
 
   LAPAZ_BRANCH_NUMBER,
+  LAPAZ_BRANCH_NUMBER1,
 
   STORE_NAME = "Sweet Bite"
 } = process.env;
@@ -29,7 +30,7 @@ const WA_URL =
  BRANCH — only one branch, LAPAZ
 --------------------------------------------------------------------------*/
 const BRANCH_NAME = "Lapaz";
-const BRANCH_NUMBER = LAPAZ_BRANCH_NUMBER;
+const BRANCH_NUMBER = LAPAZ_BRANCH_NUMBER, LAPAZ_BRANCH_NUMBER1;
 
 /*--------------------------------------------------------------------------
  MENU — Jollof Rice & Fried Rice only, prices ₵30 - ₵50 (includes free chicken)
