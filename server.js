@@ -30,7 +30,7 @@ const WA_URL =
  BRANCH — only one branch, LAPAZ
 --------------------------------------------------------------------------*/
 const BRANCH_NAME = "Lapaz";
-const BRANCH_NUMBER = LAPAZ_BRANCH_NUMBER, LAPAZ_BRANCH_NUMBER1;
+const BRANCH_NUMBER = LAPAZ_BRANCH_NUMBER;
 
 /*--------------------------------------------------------------------------
  MENU — Jollof Rice & Fried Rice only, prices ₵30 - ₵50 (includes free chicken)
