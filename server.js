@@ -16,7 +16,7 @@ const {
   WHATSAPP_VERIFY_TOKEN,
 
   LAPAZ_BRANCH_NUMBER,
-  LAPAZ_BRANCH_NUMBER1,
+
 
   STORE_NAME = "Sweet Bite"
 } = process.env;
