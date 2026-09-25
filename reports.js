@@ -5,6 +5,12 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
 
+// ➕ ADDED: small logger shared by this file, same style/format as sweetbite-bot.js
+function ts() { return new Date().toISOString().slice(11, 19); }
+function log(tag, ...args) { console.log(`[${ts()}] ${tag}`, ...args); }
+function logError(tag, error) { console.error(`[${ts()}] ${tag} ❌`, error?.message || error); }
+if (!supabase) log("[reports]", "Supabase not configured — reports will use in-memory orders only (lost on restart)."); // ➕ ADDED
+
 function getPeriodRange(period, now = new Date()) {
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
@@ -34,7 +40,7 @@ function isCancelled(order) {
 }
 
 async function saveOrder(order) {
-  if (!supabase) return;
+  if (!supabase) { log("[reports:save]", `Skipped (no Supabase) for order ${order.id}`); return; } // ➕ ADDED
   const { error } = await supabase.from("orders").insert({
     id: order.id,
     branch: order.branch,
@@ -51,25 +57,28 @@ async function saveOrder(order) {
     status: order.status,
     created_at: order.createdAt
   });
-  if (error) throw error;
+  if (error) { logError(`[reports:save] ${order.id}`, error); throw error; } // ➕ CHANGED
+  log("[reports:save]", `Order ${order.id} saved`); // ➕ ADDED
 }
 
 // ➕ ADDED: saves a status change (e.g. CANCELLED) so reports still show it after a restart.
 // Matches on id AND created_at so two orders that share an id (same minute) are never mixed up.
 async function updateOrderStatus(order, status) {
-  if (!supabase) return;
+  if (!supabase) { log("[reports:status]", `Skipped (no Supabase) for order ${order.id} -> ${status}`); return; } // ➕ ADDED
   const { error } = await supabase
     .from("orders")
     .update({ status })
     .eq("id", order.id)
     .eq("created_at", order.createdAt);
-  if (error) throw error;
+  if (error) { logError(`[reports:status] ${order.id} -> ${status}`, error); throw error; } // ➕ CHANGED
+  log("[reports:status]", `Order ${order.id} -> ${status} saved`); // ➕ ADDED
 }
 
 async function getOrders(branch, period, fallbackOrders) {
   const range = getPeriodRange(period);
   const localOrders = Array.from(fallbackOrders.values())
     .filter(order => order.branch === branch && isInRange(order, range));
+  log("[reports:get]", `${branch} ${period}: ${localOrders.length} in-memory order(s), range ${range.start.toISOString()} - ${range.end.toISOString()}`); // ➕ ADDED
 
   if (!supabase) return localOrders;
 
@@ -82,9 +91,10 @@ async function getOrders(branch, period, fallbackOrders) {
     .order("created_at", { ascending: true });
 
   if (error) {
-    console.error("SUPABASE REPORT ERROR:", error.message);
+    logError(`[reports:get] ${branch} ${period}`, error); // ➕ CHANGED (was console.error)
     return localOrders;
   }
+  log("[reports:get]", `${branch} ${period}: ${data.length} Supabase order(s) fetched`); // ➕ ADDED
 
   const storedOrders = data.map(order => ({
     ...order,
@@ -100,7 +110,7 @@ async function getOrders(branch, period, fallbackOrders) {
   // wins over the older copy stored in Supabase.
   const combined = [...localOrders, ...storedOrders];
   const seen = new Set();
-  return combined.filter(order => {
+  const result = combined.filter(order => {
     // ➕ CHANGED: compare timestamps as numbers — Supabase returns "+00:00" while JS uses "Z",
     // so comparing the raw strings could show the same order twice.
     const key = `${order.id}|${new Date(order.createdAt).getTime()}`;
@@ -108,6 +118,8 @@ async function getOrders(branch, period, fallbackOrders) {
     seen.add(key);
     return true;
   }).sort((left, right) => new Date(left.createdAt) - new Date(right.createdAt));
+  log("[reports:get]", `${branch} ${period}: returning ${result.length} order(s) after merge/de-dupe`); // ➕ ADDED
+  return result;
 }
 
 function money(value) {
