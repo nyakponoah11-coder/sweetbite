@@ -17,7 +17,6 @@ const {
 
   LAPAZ_BRANCH_NUMBER,
 
-
   STORE_NAME = "Sweet Bite"
 } = process.env;
 
@@ -25,6 +24,21 @@ const GRAPH_VERSION = process.env.GRAPH_VERSION || "v23.0";
 
 const WA_URL =
   `https://graph.facebook.com/${GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+
+/*--------------------------------------------------------------------------
+ ➕ ADDED: LOGGING — every line is timestamped and tagged so you can follow
+ what the bot is doing in the console (or your hosting provider's log tab).
+--------------------------------------------------------------------------*/
+function ts() {
+  return new Date().toISOString().slice(11, 19); // HH:MM:SS
+}
+function log(tag, ...args) {
+  console.log(`[${ts()}] ${tag}`, ...args);
+}
+function logError(tag, error) {
+  const detail = error?.response?.data ? JSON.stringify(error.response.data) : (error?.message || error);
+  console.error(`[${ts()}] ${tag} ❌`, detail);
+}
 
 /*--------------------------------------------------------------------------
  BRANCH — only one branch, LAPAZ
@@ -37,9 +51,10 @@ const BRANCH_NUMBER = LAPAZ_BRANCH_NUMBER;
 --------------------------------------------------------------------------*/
 const RICE_PORTIONS = [
   { amount: 30, chicken: 1 },
-  { amount: 40, chicken: 1 },
-  { amount: 50, chicken: 2 },
-  { amount: 60, chicken: 3 }
+  { amount: 35, chicken: 1 },
+  { amount: 40, chicken: 2 },
+  { amount: 45, chicken: 2 },
+  { amount: 50, chicken: 2 }
 ];
 
 const FOODS = {
@@ -110,44 +125,57 @@ async function sendWhatsAppText(to, body) {
     type: "text",
     text: { preview_url: false, body }
   };
-  return axios.post(WA_URL, payload, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json"
-    }
-  });
+  log("[send:text]", `-> ${to} :: ${String(body).replace(/\n/g, " | ").slice(0, 120)}`); // ➕ ADDED
+  try {
+    return await axios.post(WA_URL, payload, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    });
+  } catch (error) {
+    logError(`[send:text] to ${to}`, error); // ➕ ADDED
+    throw error;
+  }
 }
 
 async function sendWhatsAppDocument(to, pdfBuffer, filename, caption) {
-  const form = new FormData();
-  form.append("messaging_product", "whatsapp");
-  form.append("type", "application/pdf");
-  form.append("file", pdfBuffer, { filename, contentType: "application/pdf" });
+  log("[send:doc]", `-> ${to} :: ${filename} (${pdfBuffer.length} bytes)`); // ➕ ADDED
+  try {
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("type", "application/pdf");
+    form.append("file", pdfBuffer, { filename, contentType: "application/pdf" });
 
-  const upload = await axios.post(
-    `https://graph.facebook.com/${GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/media`,
-    form,
-    { headers: { Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`, ...form.getHeaders() } }
-  );
+    const upload = await axios.post(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/media`,
+      form,
+      { headers: { Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`, ...form.getHeaders() } }
+    );
 
-  return axios.post(WA_URL, {
-    messaging_product: "whatsapp",
-    recipient_type: "individual",
-    to,
-    type: "document",
-    document: { id: upload.data.id, filename, caption }
-  }, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json"
-    }
-  });
+    return await axios.post(WA_URL, {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "document",
+      document: { id: upload.data.id, filename, caption }
+    }, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    });
+  } catch (error) {
+    logError(`[send:doc] to ${to}`, error); // ➕ ADDED
+    throw error;
+  }
 }
 
 /*--------------------------------------------------------------------------
  WHATSAPP BUTTONS
 --------------------------------------------------------------------------*/
 async function sendButtons(to, body, buttons) {
+  log("[send:buttons]", `-> ${to} :: [${buttons.map(b => b.title).join(", ")}]`); // ➕ ADDED
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
@@ -164,18 +192,24 @@ async function sendButtons(to, body, buttons) {
       }
     }
   };
-  return axios.post(WA_URL, payload, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json"
-    }
-  });
+  try {
+    return await axios.post(WA_URL, payload, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    });
+  } catch (error) {
+    logError(`[send:buttons] to ${to}`, error); // ➕ ADDED
+    throw error;
+  }
 }
 
 /*--------------------------------------------------------------------------
  WHATSAPP LIST
 --------------------------------------------------------------------------*/
 async function sendInteractiveList(to, body, section, rows, buttonText = "Select") {
+  log("[send:list]", `-> ${to} :: ${section} [${rows.map(r => r.title).join(", ")}]`); // ➕ ADDED
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
@@ -199,12 +233,17 @@ async function sendInteractiveList(to, body, section, rows, buttonText = "Select
       }
     }
   };
-  return axios.post(WA_URL, payload, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json"
-    }
-  });
+  try {
+    return await axios.post(WA_URL, payload, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    });
+  } catch (error) {
+    logError(`[send:list] to ${to}`, error); // ➕ ADDED
+    throw error;
+  }
 }
 
 /*--------------------------------------------------------------------------
@@ -294,9 +333,10 @@ async function sendOrderConfirmation(to, session) {
 --------------------------------------------------------------------------*/
 async function sendOrderToBranch(order) {
   if (!BRANCH_NUMBER) {
-    console.error("No WhatsApp number configured for the Lapaz branch");
+    logError("[order:branch]", `No WhatsApp number configured for the ${BRANCH_NAME} branch (set LAPAZ_BRANCH_NUMBER)`); // ➕ CHANGED
     return false;
   }
+  log("[order:branch]", `Notifying ${BRANCH_NAME} (+${normalizePhone(BRANCH_NUMBER)}) about order ${order.id}`); // ➕ ADDED
 
   const chickenLine = order.includedChicken ? `🍗 Includes ${order.includedChicken} chicken\n` : "";
 
@@ -354,6 +394,7 @@ Please choose what you'd like to eat:`;
  PLACE ORDER
 --------------------------------------------------------------------------*/
 async function placeCustomerOrder(from, session) {
+  log("[order:new]", `${from} is placing an order`, { food: session.food, amount: session.foodAmount, fulfillment: session.fulfillment }); // ➕ ADDED
   const order = {
     id:            generateOrderId(),
     customerPhone: from,
@@ -369,13 +410,16 @@ async function placeCustomerOrder(from, session) {
   };
 
   orders.set(`${order.id}-${Date.now()}-${Math.random()}`, order);
+  log("[order:new]", `Order ${order.id} created in memory`, order); // ➕ ADDED
   try {
     await saveOrder(order);
+    log("[order:new]", `Order ${order.id} saved to Supabase`); // ➕ ADDED
   } catch (error) {
-    console.error("SUPABASE ORDER SAVE ERROR:", error.message);
+    logError(`[order:new] Supabase save for ${order.id}`, error); // ➕ CHANGED (was console.error)
   }
 
   const branchSent = await sendOrderToBranch(order);
+  log("[order:new]", `Order ${order.id} sent to branch: ${branchSent}`); // ➕ ADDED
   if (!branchSent) {
     return sendWhatsAppText(from,
       `❌ We couldn't send your order to the ${order.branch} location.\n\nPlease try again later or send *hi* to restart.`
@@ -409,16 +453,22 @@ We will notify you when your food is ready. ❤️`
  STAFF ORDER STATUS
 --------------------------------------------------------------------------*/
 async function handleStaffAction(from, action, orderId) {
+  log("[staff]", `${from} pressed "${action}" for order ${orderId}`); // ➕ ADDED
   const order = Array.from(orders.values()).find(item => item.id === orderId);
-  if (!order) return sendWhatsAppText(from, `❌ Order ${orderId} was not found.`);
+  if (!order) {
+    logError("[staff]", `Order ${orderId} not found for staff action "${action}"`); // ➕ ADDED
+    return sendWhatsAppText(from, `❌ Order ${orderId} was not found.`);
+  }
 
   // ➕ ADDED: if the customer cancelled this order, the old staff buttons must not continue it
   if (order.status === "CANCELLED") {
+    log("[staff]", `Order ${order.id} is CANCELLED — ignoring staff action "${action}"`); // ➕ ADDED
     return sendWhatsAppText(from, `❌ Order ${order.id} was already CANCELLED by the customer. No further action needed.`);
   }
 
   if (action === "prepare") {
     order.status = "PREPARING";
+    log("[order:status]", `Order ${order.id} -> PREPARING`); // ➕ ADDED
     await sendWhatsAppText(order.customerPhone,
       `👨‍🍳 *YOUR ORDER IS BEING PREPARED*\n\n🆔 ${order.id}\n🍽️ ${order.food}\n📍 ${order.branch}\n\nYour food is now being prepared.\n\nWe'll notify you when it is ready. ❤️`
     );
@@ -433,7 +483,7 @@ async function handleStaffAction(from, action, orderId) {
         ]
       );
     } catch (error) {
-      console.error("CUSTOMER CONFIRM BUTTONS ERROR:", error.response?.data || error.message);
+      logError(`[order:prepare] Continue/Cancel buttons for ${order.id}`, error); // ➕ CHANGED (was console.error)
     }
 
     return sendWhatsAppText(from, `👨‍🍳 Order ${order.id} is now marked as *PREPARING*.`);
@@ -441,6 +491,7 @@ async function handleStaffAction(from, action, orderId) {
 
   if (action === "ready") {
     order.status = "READY";
+    log("[order:status]", `Order ${order.id} -> READY`); // ➕ ADDED
     if (order.fulfillment === "pickup") {
       await sendWhatsAppText(order.customerPhone,
         `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food is ready for pickup. 🍛\n\nYou can come to the location and collect your order.\n\nThank you for ordering from ${STORE_NAME}! ❤️`
@@ -465,6 +516,7 @@ async function handleStaffAction(from, action, orderId) {
 
   if (action === "rider") {
     order.status = "OUT_FOR_DELIVERY";
+    log("[order:status]", `Order ${order.id} -> OUT_FOR_DELIVERY`); // ➕ ADDED
     await sendWhatsAppText(order.customerPhone,
       `🚴 *YOUR RIDER IS ON THE WAY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n\nYour food is on the way.\n\n💵 Payment: *PAY ON DELIVERY*\n\nPlease keep your phone available.\n\nThank you for ordering from ${STORE_NAME}! ❤️`
     );
@@ -473,12 +525,14 @@ async function handleStaffAction(from, action, orderId) {
 
   if (action === "pickup") {
     order.status = "PICKED_UP";
+    log("[order:status]", `Order ${order.id} -> PICKED_UP`); // ➕ ADDED
     await sendWhatsAppText(order.customerPhone,
       `✅ *ORDER PICKED UP*\n\n🆔 ${order.id}\n\nThank you for ordering from ${STORE_NAME}! ❤️\n\nEnjoy your food! 🍛`
     );
     return sendWhatsAppText(from, `📦 Order ${order.id} marked as *PICKED UP*.`);
   }
 
+  logError("[staff]", `Unknown staff action "${action}" for order ${orderId}`); // ➕ ADDED
   return sendWhatsAppText(from, "Unknown staff action.");
 }
 
@@ -486,19 +540,25 @@ async function handleStaffAction(from, action, orderId) {
  ➕ ADDED: CUSTOMER ANSWER AFTER "PREPARING" (continue / cancel)
 --------------------------------------------------------------------------*/
 async function handleCustomerOrderResponse(from, action, orderId) {
+  log("[customer]", `${from} pressed "${action}" for order ${orderId}`); // ➕ ADDED
   // Only the customer who placed the order can answer for it
   const order = Array.from(orders.values()).find(
     item => item.id === orderId && item.customerPhone === from
   );
-  if (!order) return sendWhatsAppText(from, `❌ Order ${orderId} was not found.`);
+  if (!order) {
+    logError("[customer]", `Order ${orderId} not found for ${from} (or belongs to a different customer)`); // ➕ ADDED
+    return sendWhatsAppText(from, `❌ Order ${orderId} was not found.`);
+  }
 
   if (order.status === "CANCELLED") {
+    log("[customer]", `Order ${order.id} already CANCELLED — ignoring "${action}"`); // ➕ ADDED
     return sendWhatsAppText(from, `Order ${order.id} has already been cancelled.`);
   }
 
   /*-- CUSTOMER STILL WANTS THE ORDER --*/
   if (action === "continue") {
     order.customerConfirmed = true;
+    log("[customer]", `Order ${order.id} confirmed by customer`); // ➕ ADDED
     return sendWhatsAppText(from,
       `✅ *THANK YOU!*\n\n🆔 Order: ${order.id}\n\nYour order is confirmed. We will notify you when it is ready. ❤️`
     );
@@ -508,6 +568,7 @@ async function handleCustomerOrderResponse(from, action, orderId) {
   if (action === "cancel") {
     // Too late to cancel once the food is ready / on the way / collected
     if (order.status !== "NEW" && order.status !== "PREPARING") {
+      log("[customer]", `Cancel refused for ${order.id} — status is already ${order.status}`); // ➕ ADDED
       return sendWhatsAppText(from,
         `⚠️ Order ${order.id} can no longer be cancelled here because it is already *${order.status.replace(/_/g, " ")}*.\n\nPlease contact ${BRANCH_NAME} directly.`
       );
@@ -516,12 +577,14 @@ async function handleCustomerOrderResponse(from, action, orderId) {
     order.status = "CANCELLED";
     order.cancelledBy = "customer";
     order.cancelledAt = new Date().toISOString();
+    log("[order:status]", `Order ${order.id} -> CANCELLED (by customer ${from})`); // ➕ ADDED
 
     // ➕ ADDED: save the cancellation so reports still show it after a restart
     try {
       await updateOrderStatus(order, "CANCELLED");
+      log("[order:status]", `Order ${order.id} cancellation saved to Supabase`); // ➕ ADDED
     } catch (error) {
-      console.error("SUPABASE ORDER STATUS UPDATE ERROR:", error.message);
+      logError(`[order:status] Supabase status update for ${order.id}`, error); // ➕ CHANGED (was console.error)
     }
 
     // Notify the branch first — this is the important part
@@ -540,7 +603,7 @@ async function handleCustomerOrderResponse(from, action, orderId) {
 Please STOP preparing this order.`
       );
     } catch (error) {
-      console.error("BRANCH CANCEL NOTIFICATION ERROR:", error.response?.data || error.message);
+      logError(`[order:status] Branch cancel notification for ${order.id}`, error); // ➕ CHANGED (was console.error)
     }
 
     return sendWhatsAppText(from,
@@ -566,8 +629,10 @@ async function showReportOptions(to) {
 }
 
 async function sendBranchReport(to, period) {
+  log("[report]", `Generating ${period} report for ${BRANCH_NAME}, requested by ${to}`); // ➕ ADDED
   try {
     const reportOrders = await getOrders(BRANCH_NAME, period, orders);
+    log("[report]", `${reportOrders.length} order(s) found for ${period}`); // ➕ ADDED
     const pdf = await createReportPdf(BRANCH_NAME, period, reportOrders);
     const filename = `sweet-bite-${BRANCH_NAME.toLowerCase()}-${period}.pdf`;
 
@@ -578,7 +643,7 @@ async function sendBranchReport(to, period) {
     );
     return sendWhatsAppDocument(to, pdf, filename, `${BRANCH_NAME} ${period} order report`);
   } catch (error) {
-    console.error("REPORT ERROR:", error.response?.data || error.message);
+    logError(`[report] ${BRANCH_NAME} ${period} for ${to}`, error); // ➕ CHANGED (was console.error)
     return sendWhatsAppText(to,
       "❌ I could not generate the report right now. Please try again in a moment."
     );
@@ -592,21 +657,28 @@ async function handleText(from, text) {
   const input = String(text || "").trim();
   const lower = input.toLowerCase();
   const isStaff = isBranchPhone(from);
+  log("[text]", `${from}${isStaff ? " (STAFF)" : ""} :: "${input}"`); // ➕ ADDED
 
-  if (isStaff && lower === "report") return showReportOptions(from);
+  if (isStaff && lower === "report") {
+    log("[text]", `${from} requested the report menu`); // ➕ ADDED
+    return showReportOptions(from);
+  }
 
   const session = getSession(from);
   if (isStaff && session.step === "REPORT_PERIOD" && ["daily", "weekly", "monthly"].includes(lower)) {
     session.step = "WELCOME";
+    log("[text]", `${from} chose "${lower}" report`); // ➕ ADDED
     return sendBranchReport(from, lower);
   }
 
   if (["hi","hello","hey","start","menu"].includes(lower)) {
+    log("[text]", `${from} restarted the session`); // ➕ ADDED
     resetSession(from);
     return showWelcome(from);
   }
 
   if (lower === "restart" || lower === "cancel") {
+    log("[text]", `${from} typed "${lower}" — session reset`); // ➕ ADDED
     resetSession(from);
     return sendWhatsAppText(from,
       "🔄 Your current order has been cancelled.\n\nSend *hi* to start a new order."
@@ -616,9 +688,11 @@ async function handleText(from, text) {
   if (session.step === "ADDRESS") {
     session.address = input;
     session.step = "CONFIRMATION";
+    log("[text]", `${from} provided delivery address: "${input}"`); // ➕ ADDED
     return sendOrderConfirmation(from, session);
   }
 
+  log("[text]", `${from} sent free text at step "${session.step}" — nothing matched, showing fallback`); // ➕ ADDED
   return sendWhatsAppText(from,
     "Please use the selection options above.\n\nSend *hi* if you want to start again."
   );
@@ -630,7 +704,11 @@ async function handleText(from, text) {
 async function handleCustomerInteractive(from, message) {
   const reply = message.interactive;
   const id = reply?.list_reply?.id || reply?.button_reply?.id;
-  if (!id) return;
+  if (!id) {
+    log("[interactive]", `${from} sent an interactive reply with no id — ignored`); // ➕ ADDED
+    return;
+  }
+  log("[interactive]", `${from} selected "${id}" (step was "${getSession(from).step}")`); // ➕ ADDED
 
   const session = getSession(from);
 
@@ -648,7 +726,11 @@ async function handleCustomerInteractive(from, message) {
   /*-- FOOD MENU (Jollof Rice / Fried Rice) --*/
   if (id.startsWith("food_")) {
     const food = FOODS[id];
-    if (!food) return;
+    if (!food) {
+      logError("[interactive]", `Unknown food id "${id}" from ${from}`); // ➕ ADDED
+      return;
+    }
+    log("[interactive]", `${from} chose ${food}`); // ➕ ADDED
 
     session.food = food;
     session.foodAmount = null;
@@ -664,7 +746,11 @@ async function handleCustomerInteractive(from, message) {
   if (id.startsWith("price_")) {
     const amount = Number(id.replace("price_", ""));
     const portion = RICE_PORTIONS.find(item => item.amount === amount);
-    if (!portion) return;
+    if (!portion) {
+      logError("[interactive]", `Unknown price id "${id}" from ${from}`); // ➕ ADDED
+      return;
+    }
+    log("[interactive]", `${from} chose ${money(amount)} (${portion.chicken} chicken) for ${session.food}`); // ➕ ADDED
 
     session.foodAmount = portion.amount;
     session.includedChicken = portion.chicken;
@@ -674,6 +760,7 @@ async function handleCustomerInteractive(from, message) {
 
   /*-- PICKUP --*/
   if (id === "pickup") {
+    log("[interactive]", `${from} chose Pick Up`); // ➕ ADDED
     session.fulfillment = "pickup";
     session.step = "CONFIRMATION";
     return sendOrderConfirmation(from, session);
@@ -681,6 +768,7 @@ async function handleCustomerInteractive(from, message) {
 
   /*-- DELIVERY --*/
   if (id === "delivery") {
+    log("[interactive]", `${from} chose Delivery — awaiting address`); // ➕ ADDED
     session.fulfillment = "delivery";
     session.step = "ADDRESS";
     return sendWhatsAppText(from,
@@ -689,10 +777,14 @@ async function handleCustomerInteractive(from, message) {
   }
 
   /*-- CONFIRM ORDER --*/
-  if (id === "confirm_order") return placeCustomerOrder(from, session);
+  if (id === "confirm_order") {
+    log("[interactive]", `${from} confirmed the order at checkout`); // ➕ ADDED
+    return placeCustomerOrder(from, session);
+  }
 
   /*-- CANCEL ORDER --*/
   if (id === "cancel_order") {
+    log("[interactive]", `${from} cancelled at checkout (before placing the order)`); // ➕ ADDED
     resetSession(from);
     return sendWhatsAppText(from, "❌ Order cancelled.\n\nSend *hi* whenever you want to order again.");
   }
@@ -704,7 +796,10 @@ async function handleCustomerInteractive(from, message) {
 async function handleInteractive(from, message) {
   const reply = message.interactive;
   const id = reply?.list_reply?.id || reply?.button_reply?.id;
-  if (!id) return;
+  if (!id) {
+    log("[interactive]", `${from} sent an interactive message with no usable id (type: ${reply?.type})`); // ➕ ADDED
+    return;
+  }
 
   if (id.startsWith("staff_prepare_")) return handleStaffAction(from, "prepare", id.replace("staff_prepare_", ""));
   if (id.startsWith("staff_ready_"))   return handleStaffAction(from, "ready",   id.replace("staff_ready_", ""));
@@ -726,8 +821,10 @@ app.get("/webhook", (req, res) => {
   const token     = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
   if (mode === "subscribe" && token === WHATSAPP_VERIFY_TOKEN) {
+    log("[webhook]", "Verification succeeded"); // ➕ ADDED
     return res.status(200).send(challenge);
   }
+  logError("[webhook]", `Verification failed (mode="${mode}", token mismatch)`); // ➕ ADDED
   return res.sendStatus(403);
 });
 
@@ -740,9 +837,15 @@ app.post("/webhook", async (req, res) => {
     const value    = req.body?.entry?.[0]?.changes?.[0]?.value;
     const messages = value?.messages || [];
 
+    log("[webhook]", `Received ${messages.length} message(s)`); // ➕ ADDED
+
     for (const message of messages) {
-      if (!message.from) continue;
+      if (!message.from) {
+        logError("[webhook]", "Skipping message with no \"from\" field"); // ➕ ADDED
+        continue;
+      }
       const from = normalizePhone(message.from);
+      log("[webhook]", `${from} :: type = ${message.type}`); // ➕ ADDED
 
       if (message.type === "text") {
         await handleText(from, message.text?.body);
@@ -752,10 +855,11 @@ app.post("/webhook", async (req, res) => {
         await handleInteractive(from, message);
         continue;
       }
+      log("[webhook]", `${from} sent unsupported message type "${message.type}" — sending fallback`); // ➕ ADDED
       await sendWhatsAppText(from, "Please use the options provided.");
     }
   } catch (error) {
-    console.error("WEBHOOK ERROR:", error.response?.data || error.message);
+    logError("[webhook]", error); // ➕ CHANGED (was console.error)
   }
 });
 
@@ -774,6 +878,7 @@ app.get("/health", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🍛 ${STORE_NAME} food bot running on port ${PORT}`);
-  console.log("Branch:", BRANCH_NAME);
+  log("[boot]", `🍛 ${STORE_NAME} food bot running on port ${PORT}`); // ➕ CHANGED (was console.log)
+  log("[boot]", `Branch: ${BRANCH_NAME} (+${normalizePhone(BRANCH_NUMBER) || "NOT SET"})`); // ➕ CHANGED
+  log("[boot]", `Supabase: ${process.env.SUPABASE_URL ? "configured" : "not configured (in-memory only)"}`); // ➕ ADDED
 });
