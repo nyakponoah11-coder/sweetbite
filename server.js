@@ -110,6 +110,55 @@ function normalizePhone(value) {
   return phone;
 }
 
+/*--------------------------------------------------------------------------
+ ➕ ADDED: WhatsApp Business-Scoped User ID (BSUID) support.
+
+ Meta is rolling out WhatsApp usernames. When a customer has no phone number
+ you're allowed to see (typically a brand-new customer — no message between
+ you in the last 30 days), the webhook sends "from_user_id" (format
+ "CC.alphanumeric", e.g. "GH.4853202848240472") INSTEAD OF "from". Outbound
+ replies to that customer must then use the "recipient" field instead of
+ "to". The old code only ever looked for "from", so these customers' messages
+ were silently skipped and they never got a reply — this is the exact cause
+ of "new first-time numbers get nothing".
+
+ Internally we key sessions/orders on either a normal digit phone string, or
+ "bsuid:<the raw BSUID>" so the two id spaces can never collide.
+--------------------------------------------------------------------------*/
+const BSUID_PREFIX = "bsuid:";
+
+function isBsuidValue(value) {
+  return typeof value === "string" && /^[A-Za-z]{2,4}\.[A-Za-z0-9]{1,128}$/.test(value);
+}
+
+function isBsuidId(id) {
+  return typeof id === "string" && id.startsWith(BSUID_PREFIX);
+}
+
+function rawBsuid(id) {
+  return id.slice(BSUID_PREFIX.length);
+}
+
+// Resolves whichever identifier this particular message carries.
+// Returns null if neither a phone nor a valid BSUID is present.
+function customerIdFromMessage(message) {
+  if (message.from) return normalizePhone(message.from);
+  if (isBsuidValue(message.from_user_id)) return BSUID_PREFIX + message.from_user_id;
+  return null;
+}
+
+// Human-friendly form for messages shown to the branch/customer and for logs.
+function displayCustomerId(id) {
+  if (!id) return "unknown customer";
+  return isBsuidId(id) ? rawBsuid(id) : `+${id}`;
+}
+
+// Builds the correct Cloud API addressing field for a send: phone numbers use
+// "to"; a customer we only know by BSUID must use "recipient" instead (never both).
+function addressingField(id) {
+  return isBsuidId(id) ? { recipient: rawBsuid(id) } : { to: id };
+}
+
 function money(amount) {
   return `₵${Number(amount).toFixed(2)}`;
 }
@@ -143,6 +192,7 @@ function resetSession(phone) {
 
 function isBranchPhone(phone) {
   if (!BRANCH_NUMBER) return false;
+  if (isBsuidId(phone)) return false; // ➕ ADDED: a BSUID is never the branch's own phone line
   return normalizePhone(phone) === normalizePhone(BRANCH_NUMBER);
 }
 
@@ -153,7 +203,7 @@ async function sendWhatsAppText(to, body) {
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
-    to,
+    ...addressingField(to), // ➕ CHANGED: phone -> "to", BSUID -> "recipient"
     type: "text",
     text: { preview_url: false, body }
   };
@@ -197,7 +247,7 @@ async function sendWhatsAppDocument(to, pdfBuffer, filename, caption) {
     return await axios.post(WA_URL, {
       messaging_product: "whatsapp",
       recipient_type: "individual",
-      to,
+      ...addressingField(to), // ➕ CHANGED: phone -> "to", BSUID -> "recipient"
       type: "document",
       document: { id: upload.data.id, filename, caption }
     }, {
@@ -220,7 +270,7 @@ async function sendButtons(to, body, buttons) {
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
-    to,
+    ...addressingField(to), // ➕ CHANGED: phone -> "to", BSUID -> "recipient"
     type: "interactive",
     interactive: {
       type: "button",
@@ -254,7 +304,7 @@ async function sendInteractiveList(to, body, section, rows, buttonText = "Select
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
-    to,
+    ...addressingField(to), // ➕ CHANGED: phone -> "to", BSUID -> "recipient"
     type: "interactive",
     interactive: {
       type: "list",
@@ -385,7 +435,7 @@ async function sendOrderToBranch(order) {
 
 🆔 Order: ${order.id}
 📍 Branch: ${order.branch}
-📱 Customer: ${order.customerPhone}
+📱 Customer: ${displayCustomerId(order.customerPhone)}${isBsuidId(order.customerPhone) ? " (WhatsApp username customer — no phone number, reply only via this bot)" : ""}
 🍽️ Food: ${order.food}
 ${chickenLine}━━━━━━━━━━━━━
 
@@ -453,7 +503,9 @@ async function placeCustomerOrder(from, session) {
   orders.set(`${order.id}-${Date.now()}-${Math.random()}`, order);
   log("[order:new]", `Order ${order.id} created in memory`, order); // ➕ ADDED
   try {
-    await saveOrder(order);
+    // ➕ CHANGED: store the clean BSUID (no internal "bsuid:" marker) in Supabase —
+    // the marker is only meaningful inside this running process.
+    await saveOrder({ ...order, customerPhone: order.customerPhone.replace(/^bsuid:/, "") });
     log("[order:new]", `Order ${order.id} saved to Supabase`); // ➕ ADDED
   } catch (error) {
     logError(`[order:new] Supabase save for ${order.id}`, error); // ➕ CHANGED (was console.error)
@@ -635,7 +687,7 @@ async function handleCustomerOrderResponse(from, action, orderId) {
         `❌ *ORDER CANCELLED BY CUSTOMER*
 
 🆔 Order: ${order.id}
-📱 Customer: ${order.customerPhone}
+📱 Customer: ${displayCustomerId(order.customerPhone)}
 🍽️ Food: ${order.food}
 💵 Total: ${money(order.total)}
 🚚 Method: ${order.fulfillment === "pickup" ? "PICK UP" : "DELIVERY — PAY ON DELIVERY"}
@@ -892,21 +944,23 @@ app.post("/webhook", async (req, res) => {
     log("[webhook]", `Received ${messages.length} message(s)`); // ➕ ADDED
 
     for (const message of messages) {
-      if (!message.from) {
-        // ➕ CHANGED: log the raw message so a malformed/partial delivery (like a cold-start
-        // glitch) can actually be diagnosed instead of just noting that it happened.
-        logError("[webhook]", `Skipping message with no "from" field. Raw: ${JSON.stringify(message).slice(0, 300)}`);
-        continue;
-      }
-
-      // ➕ ADDED: ignore a message we've already handled (WhatsApp retry / duplicate delivery)
+      // ➕ ADDED: ignore a message we've already handled (WhatsApp retry / duplicate delivery).
+      // Checked before id resolution so a retried BSUID-only message is also caught.
       if (alreadyProcessed(message.id)) {
         log("[webhook]", `Duplicate delivery of message ${message.id} — already handled, ignoring`);
         continue;
       }
 
-      const from = normalizePhone(message.from);
-      log("[webhook]", `${from} :: type = ${message.type}${message.id ? ` (id: ${message.id})` : ""}`); // ➕ CHANGED
+      // ➕ CHANGED: resolve either a phone number ("from") or, when Meta withholds the phone
+      // number (brand-new customer, or one using a WhatsApp username), a Business-Scoped User
+      // ID ("from_user_id"). Only skip if NEITHER is present/valid.
+      const from = customerIdFromMessage(message);
+      if (!from) {
+        logError("[webhook]", `Skipping message with no usable sender id (no "from" or valid "from_user_id"). Raw: ${JSON.stringify(message).slice(0, 300)}`);
+        continue;
+      }
+
+      log("[webhook]", `${displayCustomerId(from)} :: type = ${message.type}${message.id ? ` (id: ${message.id})` : ""}`); // ➕ CHANGED
 
       if (message.type === "text") {
         await handleText(from, message.text?.body);
@@ -916,7 +970,7 @@ app.post("/webhook", async (req, res) => {
         await handleInteractive(from, message);
         continue;
       }
-      log("[webhook]", `${from} sent unsupported message type "${message.type}" — sending fallback`); // ➕ ADDED
+      log("[webhook]", `${displayCustomerId(from)} sent unsupported message type "${message.type}" — sending fallback`); // ➕ CHANGED
       await sendWhatsAppText(from, "Please use the options provided.");
     }
   } catch (error) {
