@@ -40,6 +40,18 @@ function logError(tag, error) {
   console.error(`[${ts()}] ${tag} ❌`, detail);
 }
 
+// ➕ ADDED: if the process is about to crash or die, say so loudly BEFORE it goes down.
+// Without this, a crash mid-message looks identical to "the bot silently ignored this person" —
+// the log simply stops with no explanation, which is exactly what you were seeing.
+process.on("uncaughtException", (error) => {
+  logError("[crash] uncaughtException — process will exit", error);
+});
+process.on("unhandledRejection", (reason) => {
+  logError("[crash] unhandledRejection (a promise failed with no .catch)", reason);
+});
+process.on("SIGTERM", () => log("[boot]", "Received SIGTERM — host is stopping/restarting this process"));
+process.on("SIGINT",  () => log("[boot]", "Received SIGINT — process stopping"));
+
 /*--------------------------------------------------------------------------
  BRANCH — only one branch, LAPAZ
 --------------------------------------------------------------------------*/
@@ -134,7 +146,16 @@ async function sendWhatsAppText(to, body) {
       }
     });
   } catch (error) {
-    logError(`[send:text] to ${to}`, error); // ➕ ADDED
+    // ➕ ADDED: Meta error 131030 means this WhatsApp app is still in "Development" mode,
+    // which only allows sending to a short list of pre-approved test numbers. Receiving
+    // still works either way, which is exactly why a brand-new customer's message shows
+    // up in the logs but never gets a reply. Fix: Meta dashboard -> WhatsApp -> API Setup
+    // -> add the number as a tester, or switch the app to Live mode (needs Business Verification).
+    if (error?.response?.data?.error?.code === 131030) {
+      logError(`[send:text] to ${to} — RECIPIENT NOT ALLOWED (app is in Development mode; add ${to} as a test number in Meta's WhatsApp API Setup, or go Live)`, error);
+    } else {
+      logError(`[send:text] to ${to}`, error);
+    }
     throw error;
   }
 }
@@ -832,10 +853,21 @@ app.get("/webhook", (req, res) => {
  WHATSAPP WEBHOOK
 --------------------------------------------------------------------------*/
 app.post("/webhook", async (req, res) => {
+  // ➕ ADDED: unconditional log — proves the request reached this server at all,
+  // even if the body below turns out to be empty or in an unexpected shape.
+  log("[webhook]", `POST /webhook hit — body keys: [${Object.keys(req.body || {}).join(", ") || "EMPTY"}]`);
+
   res.sendStatus(200);
   try {
     const value    = req.body?.entry?.[0]?.changes?.[0]?.value;
     const messages = value?.messages || [];
+
+    // ➕ ADDED: if WhatsApp sent something other than a new message (e.g. a delivery/read
+    // status update, or a differently-shaped payload), say so instead of going quiet.
+    if (!messages.length) {
+      log("[webhook]", `No "messages" array found. object=${req.body?.object}, statuses=${!!value?.statuses}, raw value keys=[${Object.keys(value || {}).join(", ")}]`);
+      return;
+    }
 
     log("[webhook]", `Received ${messages.length} message(s)`); // ➕ ADDED
 
