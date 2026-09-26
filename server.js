@@ -925,19 +925,33 @@ app.get("/webhook", (req, res) => {
  WHATSAPP WEBHOOK
 --------------------------------------------------------------------------*/
 app.post("/webhook", async (req, res) => {
-  // ➕ ADDED: unconditional log — proves the request reached this server at all,
-  // even if the body below turns out to be empty or in an unexpected shape.
-  log("[webhook]", `POST /webhook hit — body keys: [${Object.keys(req.body || {}).join(", ") || "EMPTY"}]`);
-
   res.sendStatus(200);
   try {
     const value    = req.body?.entry?.[0]?.changes?.[0]?.value;
     const messages = value?.messages || [];
+    const statuses = value?.statuses || [];
 
-    // ➕ ADDED: if WhatsApp sent something other than a new message (e.g. a delivery/read
-    // status update, or a differently-shaped payload), say so instead of going quiet.
+    // ➕ CHANGED: WhatsApp sends a separate "status" webhook every time a message you sent
+    // changes state (sent -> delivered -> read) — one bot reply can trigger several of these
+    // in quick succession. That's normal traffic, not an error, so routine ones are now
+    // completely silent. A FAILED delivery (customer blocked you, invalid number, etc.) is
+    // still logged clearly, since that's the one case you actually need to know about.
+    if (statuses.length) {
+      for (const status of statuses) {
+        if (status.status === "failed") {
+          const reason = (status.errors || []).map(e => `${e.code}: ${e.title}`).join("; ") || "no error detail provided";
+          const recipientId = isBsuidValue(status.recipient_id) ? (BSUID_PREFIX + status.recipient_id) : normalizePhone(status.recipient_id);
+          logError(`[status] Delivery FAILED to ${displayCustomerId(recipientId)} (message ${status.id})`, reason);
+        }
+        // "sent" / "delivered" / "read" -> intentionally not logged (routine, high-volume noise)
+      }
+      return;
+    }
+
     if (!messages.length) {
-      log("[webhook]", `No "messages" array found. object=${req.body?.object}, statuses=${!!value?.statuses}, raw value keys=[${Object.keys(value || {}).join(", ")}]`);
+      // ➕ CHANGED: genuinely unexpected shape (not messages, not statuses) — still worth
+      // seeing in full, since this is rare and likely means something changed on Meta's side.
+      log("[webhook]", `Unexpected payload: no "messages" or "statuses" found. object=${req.body?.object}, raw value keys=[${Object.keys(value || {}).join(", ")}]`);
       return;
     }
 
