@@ -65,7 +65,7 @@ const RICE_PORTIONS = [
   { amount: 30, chicken: 1 },
   { amount: 40, chicken: 1 },
   { amount: 50, chicken: 2 },
-  { amount: 60, chicken: 3}
+  { amount: 60, chicken: 3 }
 ];
 
 const FOODS = {
@@ -79,6 +79,10 @@ const FOODS = {
 const sessions = new Map();
 const orders   = new Map();
 
+// ➕ ADDED: remembers recently-seen WhatsApp message IDs so a retried delivery
+// (the exact scenario in your screenshot — same "Hi" delivered twice, 55s apart)
+// never gets processed twice. This matters most for order confirmations: without
+// this, a retried "Place Order" tap could create two orders from one tap.
 const PROCESSED_MESSAGE_TTL_MS = 30 * 60 * 1000; // 30 minutes is far longer than WhatsApp ever waits to retry
 const processedMessageIds = new Map(); // id -> timestamp seen
 setInterval(() => {
@@ -107,6 +111,18 @@ function normalizePhone(value) {
 
 /*--------------------------------------------------------------------------
  ➕ ADDED: WhatsApp Business-Scoped User ID (BSUID) support.
+
+ Meta is rolling out WhatsApp usernames. When a customer has no phone number
+ you're allowed to see (typically a brand-new customer — no message between
+ you in the last 30 days), the webhook sends "from_user_id" (format
+ "CC.alphanumeric", e.g. "GH.4853202848240472") INSTEAD OF "from". Outbound
+ replies to that customer must then use the "recipient" field instead of
+ "to". The old code only ever looked for "from", so these customers' messages
+ were silently skipped and they never got a reply — this is the exact cause
+ of "new first-time numbers get nothing".
+
+ Internally we key sessions/orders on either a normal digit phone string, or
+ "bsuid:<the raw BSUID>" so the two id spaces can never collide.
 --------------------------------------------------------------------------*/
 const BSUID_PREFIX = "bsuid:";
 
@@ -136,6 +152,17 @@ function displayCustomerId(id) {
   return isBsuidId(id) ? rawBsuid(id) : `+${id}`;
 }
 
+// ➕ ADDED: combines the customer's WhatsApp name/@username (if known) with their id,
+// e.g. "Kwame Mensah @kwame123 (GH.955939456943383)" instead of just the raw id.
+// Falls back to the plain id when no name/username was ever captured for them.
+function customerLabel(order) {
+  const idPart = displayCustomerId(order.customerPhone);
+  const namePart = order.customerName || null;
+  const userPart = order.customerUsername ? `@${String(order.customerUsername).replace(/^@/, "")}` : null;
+  const extras = [namePart, userPart].filter(Boolean).join(" ");
+  return extras ? `${extras} (${idPart})` : idPart;
+}
+
 // Builds the correct Cloud API addressing field for a send: phone numbers use
 // "to"; a customer we only know by BSUID must use "recipient" instead (never both).
 function addressingField(id) {
@@ -155,13 +182,16 @@ function getSession(phone) {
       includedChicken: 0,
       fulfillment: null,
       address: null,
-      order: null
+      order: null,
+      customerName: null,     // ➕ ADDED: WhatsApp display name, when Meta sends one
+      customerUsername: null // ➕ ADDED: WhatsApp @username, when the customer has set one
     });
   }
   return sessions.get(phone);
 }
 
 function resetSession(phone) {
+  const existing = sessions.get(phone); // ➕ ADDED: carry the name/username through a reset
   sessions.set(phone, {
     step: "WELCOME",
     food: null,
@@ -169,7 +199,9 @@ function resetSession(phone) {
     includedChicken: 0,
     fulfillment: null,
     address: null,
-    order: null
+    order: null,
+    customerName: existing?.customerName || null,         // ➕ ADDED
+    customerUsername: existing?.customerUsername || null  // ➕ ADDED
   });
 }
 
@@ -418,7 +450,7 @@ async function sendOrderToBranch(order) {
 
 🆔 Order: ${order.id}
 📍 Branch: ${order.branch}
-📱 Customer: ${displayCustomerId(order.customerPhone)}${isBsuidId(order.customerPhone) ? " (WhatsApp username customer — no phone number, reply only via this bot)" : ""}
+📱 Customer: ${customerLabel(order)}${isBsuidId(order.customerPhone) ? " — no phone number, reply only via this bot" : ""}
 🍽️ Food: ${order.food}
 ${chickenLine}━━━━━━━━━━━━━
 
@@ -449,9 +481,9 @@ async function showWelcome(to) {
   const message = `👋 *WELCOME TO ${STORE_NAME.toUpperCase()}!* 🍛
 
 We are happy to serve you.
-Enjoy delicious rice from our Lapaz location. 
+Enjoy delicious rice from our Lapaz location.
 
-*SECRET 🤫:* Avoid joining queque; Fast serve here.
+*SECRET:* You will be served very fast without joining queue
 
 🍚 Jollof Rice
 🍚 Fried Rice
@@ -474,6 +506,8 @@ async function placeCustomerOrder(from, session) {
   const order = {
     id:            generateOrderId(),
     customerPhone: from,
+    customerName:     session.customerName || null,     // ➕ ADDED
+    customerUsername: session.customerUsername || null, // ➕ ADDED
     branch:        BRANCH_NAME,
     food:          session.food,
     basePrice:     calculateTotal(session),
@@ -530,6 +564,29 @@ We will notify you when your food is ready. ❤️`
 /*--------------------------------------------------------------------------
  STAFF ORDER STATUS
 --------------------------------------------------------------------------*/
+
+// ➕ ADDED: sends a status update to the customer; if it fails, tells the branch
+// immediately instead of the customer silently never finding out. The most common
+// cause is error 131047 — more than 24 hours since the customer's last message,
+// which WhatsApp blocks a free-form (non-template) reply for.
+async function notifyCustomer(order, text, staffPhone) {
+  try {
+    await sendWhatsAppText(order.customerPhone, text);
+  } catch (error) {
+    const code = error?.response?.data?.error?.code;
+    const reason = code === 131047
+      ? "more than 24 hours since their last message — WhatsApp blocks automatic replies outside that window"
+      : (error?.response?.data?.error?.message || error.message || "unknown error");
+    log("[order:notify]", `Could not reach customer for order ${order.id} (${reason})`);
+    if (staffPhone) {
+      // best-effort — if even this fails, don't let it crash the calling flow
+      await sendWhatsAppText(staffPhone,
+        `⚠️ *COULD NOT NOTIFY CUSTOMER*\n\n🆔 Order: ${order.id}\n📱 Customer: ${customerLabel(order)}\n\nReason: ${reason}\n\nPlease contact them directly if possible.`
+      ).catch(() => {});
+    }
+  }
+}
+
 async function handleStaffAction(from, action, orderId) {
   log("[staff]", `${from} pressed "${action}" for order ${orderId}`); // ➕ ADDED
   const order = Array.from(orders.values()).find(item => item.id === orderId);
@@ -547,8 +604,9 @@ async function handleStaffAction(from, action, orderId) {
   if (action === "prepare") {
     order.status = "PREPARING";
     log("[order:status]", `Order ${order.id} -> PREPARING`); // ➕ ADDED
-    await sendWhatsAppText(order.customerPhone,
-      `👨‍🍳 *YOUR ORDER IS BEING PREPARED*\n\n🆔 ${order.id}\n🍽️ ${order.food}\n📍 ${order.branch}\n\nYour food is now being prepared.\n\nWe'll notify you when it is ready. ❤️`
+    await notifyCustomer(order, // ➕ CHANGED: now alerts the branch if this can't be delivered
+      `👨‍🍳 *YOUR ORDER IS BEING PREPARED*\n\n🆔 ${order.id}\n🍽️ ${order.food}\n📍 ${order.branch}\n\nYour food is now being prepared.\n\nWe'll notify you when it is ready. ❤️`,
+      from
     );
 
     // ➕ ADDED: after the "preparing" message, ask the customer to choose: continue or cancel
@@ -571,12 +629,14 @@ async function handleStaffAction(from, action, orderId) {
     order.status = "READY";
     log("[order:status]", `Order ${order.id} -> READY`); // ➕ ADDED
     if (order.fulfillment === "pickup") {
-      await sendWhatsAppText(order.customerPhone,
-        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food is ready for pickup. 🍛\n\nYou can come to the location and collect your order.\n\nThank you for ordering from ${STORE_NAME}! ❤️`
+      await notifyCustomer(order, // ➕ CHANGED
+        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food is ready for pickup. 🍛\n\nYou can come to the location and collect your order.\n\nThank you for ordering from ${STORE_NAME}! ❤️`,
+        from
       );
     } else {
-      await sendWhatsAppText(order.customerPhone,
-        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food has been prepared and is ready for delivery.\n\n🚚 Your rider will be on the way shortly.\n\n💵 Please remember: *PAY ON DELIVERY*.`
+      await notifyCustomer(order, // ➕ CHANGED
+        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food has been prepared and is ready for delivery.\n\n🚚 Your rider will be on the way shortly.\n\n💵 Please remember: *PAY ON DELIVERY*.`,
+        from
       );
     }
 
@@ -595,8 +655,9 @@ async function handleStaffAction(from, action, orderId) {
   if (action === "rider") {
     order.status = "OUT_FOR_DELIVERY";
     log("[order:status]", `Order ${order.id} -> OUT_FOR_DELIVERY`); // ➕ ADDED
-    await sendWhatsAppText(order.customerPhone,
-      `🚴 *YOUR RIDER IS ON THE WAY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n\nYour food is on the way.\n\n💵 Payment: *PAY ON DELIVERY*\n\nPlease keep your phone available.\n\nThank you for ordering from ${STORE_NAME}! ❤️`
+    await notifyCustomer(order, // ➕ CHANGED
+      `🚴 *YOUR RIDER IS ON THE WAY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n\nYour food is on the way.\n\n💵 Payment: *PAY ON DELIVERY*\n\nPlease keep your phone available.\n\nThank you for ordering from ${STORE_NAME}! ❤️`,
+      from
     );
     return sendWhatsAppText(from, `🚴 Order ${order.id} marked as *OUT FOR DELIVERY*.`);
   }
@@ -604,8 +665,9 @@ async function handleStaffAction(from, action, orderId) {
   if (action === "pickup") {
     order.status = "PICKED_UP";
     log("[order:status]", `Order ${order.id} -> PICKED_UP`); // ➕ ADDED
-    await sendWhatsAppText(order.customerPhone,
-      `✅ *ORDER PICKED UP*\n\n🆔 ${order.id}\n\nThank you for ordering from ${STORE_NAME}! ❤️\n\nEnjoy your food! 🍛`
+    await notifyCustomer(order, // ➕ CHANGED
+      `✅ *ORDER PICKED UP*\n\n🆔 ${order.id}\n\nThank you for ordering from ${STORE_NAME}! ❤️\n\nEnjoy your food! 🍛`,
+      from
     );
     return sendWhatsAppText(from, `📦 Order ${order.id} marked as *PICKED UP*.`);
   }
@@ -672,7 +734,7 @@ async function handleCustomerOrderResponse(from, action, orderId) {
         `❌ *ORDER CANCELLED BY CUSTOMER*
 
 🆔 Order: ${order.id}
-📱 Customer: ${displayCustomerId(order.customerPhone)}
+📱 Customer: ${customerLabel(order)}
 🍽️ Food: ${order.food}
 💵 Total: ${money(order.total)}
 🚚 Method: ${order.fulfillment === "pickup" ? "PICK UP" : "DELIVERY — PAY ON DELIVERY"}
@@ -916,6 +978,22 @@ app.post("/webhook", async (req, res) => {
     const messages = value?.messages || [];
     const statuses = value?.statuses || [];
 
+    // ➕ ADDED: the 24-hour reply window is tracked per (customer, specific phone number) —
+    // not "the business" in general. If this webhook's phone_number_id (the number that
+    // actually RECEIVED the customer's message) doesn't match WHATSAPP_PHONE_NUMBER_ID (the
+    // number your bot SENDS from), every reply looks like a fresh re-engagement attempt to
+    // Meta even seconds after the customer messaged — because they messaged a different
+    // number than the one you're replying from. This is the single most common cause of
+    // error 131047 showing up for a genuinely brand-new order.
+    const receivingPhoneNumberId = value?.metadata?.phone_number_id;
+    if (receivingPhoneNumberId && receivingPhoneNumberId !== WHATSAPP_PHONE_NUMBER_ID) {
+      logError(
+        "[webhook] PHONE NUMBER MISMATCH",
+        `This message was received on phone_number_id ${receivingPhoneNumberId}, but WHATSAPP_PHONE_NUMBER_ID is set to ${WHATSAPP_PHONE_NUMBER_ID}. ` +
+        `Replies are being sent from the WRONG number, which is exactly what triggers error 131047 even on a fresh order. Fix: set WHATSAPP_PHONE_NUMBER_ID to ${receivingPhoneNumberId} in your environment variables and redeploy.`
+      );
+    }
+
     // ➕ CHANGED: WhatsApp sends a separate "status" webhook every time a message you sent
     // changes state (sent -> delivered -> read) — one bot reply can trigger several of these
     // in quick succession. That's normal traffic, not an error, so routine ones are now
@@ -960,6 +1038,20 @@ app.post("/webhook", async (req, res) => {
       }
 
       log("[webhook]", `${displayCustomerId(from)} :: type = ${message.type}${message.id ? ` (id: ${message.id})` : ""}`); // ➕ CHANGED
+
+      // ➕ ADDED: Meta sends the customer's WhatsApp display name (and, if they've set one,
+      // their @username) alongside every message, in value.contacts[] — separate from the
+      // BSUID. Remembering it lets the branch see a real name instead of just "GH.xxxxxx".
+      const contactEntry = (value?.contacts || []).find(
+        c => c.wa_id === message.from || c.wa_id === message.from_user_id
+      ) || value?.contacts?.[0];
+      const customerName = contactEntry?.profile?.name || null;
+      const customerUsername = message.username || contactEntry?.profile?.username || contactEntry?.username || null;
+      if (customerName || customerUsername) {
+        const session = getSession(from);
+        if (customerName) session.customerName = customerName;
+        if (customerUsername) session.customerUsername = customerUsername;
+      }
 
       if (message.type === "text") {
         await handleText(from, message.text?.body);
