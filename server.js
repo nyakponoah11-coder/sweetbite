@@ -80,6 +80,26 @@ const FOODS = {
 const sessions = new Map();
 const orders   = new Map();
 
+// ➕ ADDED: remembers recently-seen WhatsApp message IDs so a retried delivery
+// (the exact scenario in your screenshot — same "Hi" delivered twice, 55s apart)
+// never gets processed twice. This matters most for order confirmations: without
+// this, a retried "Place Order" tap could create two orders from one tap.
+const PROCESSED_MESSAGE_TTL_MS = 30 * 60 * 1000; // 30 minutes is far longer than WhatsApp ever waits to retry
+const processedMessageIds = new Map(); // id -> timestamp seen
+setInterval(() => {
+  const cutoff = Date.now() - PROCESSED_MESSAGE_TTL_MS;
+  for (const [id, seenAt] of processedMessageIds) {
+    if (seenAt < cutoff) processedMessageIds.delete(id);
+  }
+}, 5 * 60 * 1000).unref();
+
+function alreadyProcessed(messageId) {
+  if (!messageId) return false; // no id to dedupe on — let it through rather than risk blocking real messages
+  if (processedMessageIds.has(messageId)) return true;
+  processedMessageIds.set(messageId, Date.now());
+  return false;
+}
+
 /*--------------------------------------------------------------------------
  HELPERS
 --------------------------------------------------------------------------*/
@@ -873,11 +893,20 @@ app.post("/webhook", async (req, res) => {
 
     for (const message of messages) {
       if (!message.from) {
-        logError("[webhook]", "Skipping message with no \"from\" field"); // ➕ ADDED
+        // ➕ CHANGED: log the raw message so a malformed/partial delivery (like a cold-start
+        // glitch) can actually be diagnosed instead of just noting that it happened.
+        logError("[webhook]", `Skipping message with no "from" field. Raw: ${JSON.stringify(message).slice(0, 300)}`);
         continue;
       }
+
+      // ➕ ADDED: ignore a message we've already handled (WhatsApp retry / duplicate delivery)
+      if (alreadyProcessed(message.id)) {
+        log("[webhook]", `Duplicate delivery of message ${message.id} — already handled, ignoring`);
+        continue;
+      }
+
       const from = normalizePhone(message.from);
-      log("[webhook]", `${from} :: type = ${message.type}`); // ➕ ADDED
+      log("[webhook]", `${from} :: type = ${message.type}${message.id ? ` (id: ${message.id})` : ""}`); // ➕ CHANGED
 
       if (message.type === "text") {
         await handleText(from, message.text?.body);
