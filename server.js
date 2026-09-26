@@ -325,8 +325,8 @@ async function sendInteractiveList(to, body, section, rows, buttonText = "Select
 --------------------------------------------------------------------------*/
 function foodRows() {
   return [
-    { id: "food_jollof", title: "Jollof Rice", description: "₵30 - ₵50" },
-    { id: "food_fried",  title: "Fried Rice",  description: "₵30 - ₵50" }
+    { id: "food_jollof", title: "Jollof Rice", description: "₵30 - ₵60" },
+    { id: "food_fried",  title: "Fried Rice",  description: "₵30 - ₵60" }
   ];
 }
 
@@ -449,7 +449,9 @@ async function showWelcome(to) {
   const message = `👋 *WELCOME TO ${STORE_NAME.toUpperCase()}!* 🍛
 
 We are happy to serve you.
-Enjoy delicious rice from our Lapaz location. *SECRET 🤫:* Avoid joining queque; Fast serve here.
+Enjoy delicious rice from our Lapaz location. 
+
+*SECRET 🤫:* Avoid joining queque; Fast serve here.
 
 🍚 Jollof Rice
 🍚 Fried Rice
