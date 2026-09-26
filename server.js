@@ -63,10 +63,9 @@ const BRANCH_NUMBER = LAPAZ_BRANCH_NUMBER;
 --------------------------------------------------------------------------*/
 const RICE_PORTIONS = [
   { amount: 30, chicken: 1 },
-  { amount: 35, chicken: 1 },
-  { amount: 40, chicken: 2 },
-  { amount: 45, chicken: 2 },
-  { amount: 50, chicken: 2 }
+  { amount: 40, chicken: 1 },
+  { amount: 50, chicken: 2 },
+  { amount: 60, chicken: 3}
 ];
 
 const FOODS = {
@@ -80,10 +79,6 @@ const FOODS = {
 const sessions = new Map();
 const orders   = new Map();
 
-// ➕ ADDED: remembers recently-seen WhatsApp message IDs so a retried delivery
-// (the exact scenario in your screenshot — same "Hi" delivered twice, 55s apart)
-// never gets processed twice. This matters most for order confirmations: without
-// this, a retried "Place Order" tap could create two orders from one tap.
 const PROCESSED_MESSAGE_TTL_MS = 30 * 60 * 1000; // 30 minutes is far longer than WhatsApp ever waits to retry
 const processedMessageIds = new Map(); // id -> timestamp seen
 setInterval(() => {
@@ -112,18 +107,6 @@ function normalizePhone(value) {
 
 /*--------------------------------------------------------------------------
  ➕ ADDED: WhatsApp Business-Scoped User ID (BSUID) support.
-
- Meta is rolling out WhatsApp usernames. When a customer has no phone number
- you're allowed to see (typically a brand-new customer — no message between
- you in the last 30 days), the webhook sends "from_user_id" (format
- "CC.alphanumeric", e.g. "GH.4853202848240472") INSTEAD OF "from". Outbound
- replies to that customer must then use the "recipient" field instead of
- "to". The old code only ever looked for "from", so these customers' messages
- were silently skipped and they never got a reply — this is the exact cause
- of "new first-time numbers get nothing".
-
- Internally we key sessions/orders on either a normal digit phone string, or
- "bsuid:<the raw BSUID>" so the two id spaces can never collide.
 --------------------------------------------------------------------------*/
 const BSUID_PREFIX = "bsuid:";
 
