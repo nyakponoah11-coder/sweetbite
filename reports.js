@@ -285,7 +285,9 @@ function createReportPdf(branch, period, orders) {
         if (order.soup) details.push(`Soup: ${pdfSafeText(order.soup)}`);
         if (order.proteinSummary) details.push(pdfSafeText(order.proteinSummary).replace(/[\r\n]+/g, ", "));
         const detailText = details.join(" | ");
-        const customer = pdfSafeText(order.customerPhone || order.customer_phone || "-");
+        // ➕ CHANGED: strip the internal "bsuid:" marker if present, so a WhatsApp-username
+        // customer (no phone number) shows as their bare BSUID instead of "bsuid:GH.xxxx"
+        const customer = pdfSafeText(String(order.customerPhone || order.customer_phone || "-").replace(/^bsuid:/, ""));
         const rowHeight = Math.max(36, doc.heightOfString(detailText, { width: 158 }) + 18);
 
         if (doc.y + rowHeight > 745) {
