@@ -449,7 +449,7 @@ async function showWelcome(to) {
   const message = `👋 *WELCOME TO ${STORE_NAME.toUpperCase()}!* 🍛
 
 We are happy to serve you.
-Enjoy delicious rice from our Lapaz location.
+Enjoy delicious rice from our Lapaz location. *SECRET 🤫:* Avoid joining queque; Fast serve here.
 
 🍚 Jollof Rice
 🍚 Fried Rice
