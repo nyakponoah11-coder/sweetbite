@@ -4,6 +4,7 @@
   "description": "WhatsApp food ordering bot for Sweet Bite (LAPAZ branch)",
   "main": "server.js",
   "scripts": {
+    "build": "node -c server.js reports.js",
     "start": "node server.js",
     "dev": "node server.js"
   },

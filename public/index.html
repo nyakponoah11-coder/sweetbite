@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sweet Bite · Bot Operations & Activity Dashboard</title>
+  <meta name="description" content="Real-time operations dashboard and activity monitor for Sweet Bite WhatsApp Food Ordering Bot (Lapaz Branch).">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            dark: {
+              950: '#070b14',
+              900: '#0c1222',
+              850: '#11192e',
+              800: '#17223b',
+              700: '#233355',
+            },
+            brand: {
+              500: '#f97316',
+              600: '#ea580c',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* Robust base styles in case external resources are delayed */
+    body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+    /* Subtle scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #070b14; }
+    ::-webkit-scrollbar-thumb { background: #233355; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #334b7a; }
+  </style>
+</head>
+<body class="h-full flex flex-col bg-[#070b14] text-slate-200 antialiased selection:bg-orange-500/30 selection:text-orange-200">
+
+  <!-- TOP BAR CONTRACT: Zone 1 (Brand) | Zone 2 (Navigation) | Zone 3 (Primary Actions) -->
+  <header class="sticky top-0 z-30 h-16 border-b border-slate-800/80 bg-[#0c1222]/90 backdrop-blur px-4 sm:px-6 flex items-center justify-between">
+    <!-- Zone 1: Single text element wordmark -->
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-amber-600 flex items-center justify-center text-white font-bold text-sm shadow-sm shadow-orange-500/20">
+        SB
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="text-base font-bold tracking-tight text-white">SWEET BITE</span>
+          <span class="text-xs text-slate-500 hidden sm:inline">·</span>
+          <span class="text-xs text-orange-400/90 font-medium hidden sm:inline" id="headerBranch">Lapaz Operations</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Zone 2: Navigation views -->
+    <nav class="hidden md:flex items-center gap-1 bg-[#11192e] p-1 rounded-lg border border-slate-800">
+      <button onclick="switchTab('overview')" id="nav-overview" class="nav-btn px-3 py-1.5 text-xs font-medium rounded-md transition-colors bg-slate-800 text-white shadow-sm">
+        Live Board
+      </button>
+      <button onclick="switchTab('activities')" id="nav-activities" class="nav-btn px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-slate-400 hover:text-slate-200">
+        Activity Stream
+      </button>
+      <button onclick="switchTab('simulator')" id="nav-simulator" class="nav-btn px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-slate-400 hover:text-slate-200">
+        Bot Simulator
+      </button>
+      <button onclick="switchTab('webhook-info')" id="nav-webhook-info" class="nav-btn px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-slate-400 hover:text-slate-200">
+        Webhook Setup
+      </button>
+    </nav>
+
+    <!-- Zone 3: Primary Actions -->
+    <div class="flex items-center gap-2 sm:gap-3">
+      <!-- Auto refresh toggle -->
+      <button onclick="toggleAutoRefresh()" id="refreshToggleBtn" class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-800 bg-[#11192e] text-slate-300 hover:text-white transition-colors" title="Toggle 3s live polling">
+        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" id="refreshDot"></span>
+        <span id="refreshLabel" class="hidden sm:inline">Live Sync</span>
+      </button>
+
+      <!-- Simulate quick order -->
+      <button onclick="openSimulateModal()" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-orange-600 hover:bg-orange-500 text-white transition-colors shadow-sm shadow-orange-600/30 whitespace-nowrap">
+        + Simulate Order
+      </button>
+
+      <!-- Export PDF Report -->
+      <button onclick="openExportModal()" class="hidden sm:inline-flex px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors whitespace-nowrap">
+        Export Report
+      </button>
+    </div>
+  </header>
+
+  <!-- SUBHEADER / STATUS BANNER -->
+  <div class="bg-[#0c1222] border-b border-slate-800/80 px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+    <div class="flex items-center gap-3 flex-wrap">
+      <div class="flex items-center gap-1.5 text-slate-400">
+        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+        <span class="font-medium text-slate-300">Bot Active</span>
+        <span class="text-slate-600">·</span>
+        <span class="text-slate-400">Port <span class="font-mono tabular-nums">3000</span></span>
+      </div>
+      <span class="text-slate-700 hidden sm:inline">|</span>
+      <div class="text-slate-400 flex items-center gap-1">
+        <span>Webhook:</span>
+        <code class="font-mono text-emerald-400/90 bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-800/40">/webhook</code>
+      </div>
+      <span class="text-slate-700 hidden sm:inline">|</span>
+      <div class="text-slate-400" id="storageModeBadge">
+        Storage: <span class="text-slate-300 font-medium">In-Memory Active</span>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-3 text-slate-400">
+      <div>Uptime: <span class="font-mono tabular-nums text-slate-300" id="statUptime">0s</span></div>
+      <span class="text-slate-700">·</span>
+      <div>Last Sync: <span class="font-mono tabular-nums text-slate-300" id="lastSyncTime">Just now</span></div>
+    </div>
+  </div>
+
+  <!-- MAIN VIEWPORT -->
+  <main class="flex-1 overflow-y-auto p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-6">
+
+    <!-- METRICS STRIP -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+      <div class="bg-[#0c1222] border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Total Orders</div>
+        <div class="mt-2 flex items-baseline justify-between">
+          <span class="text-2xl sm:text-3xl font-bold font-mono tabular-nums text-white" id="statOrdersCount">0</span>
+          <span class="text-xs text-slate-400" id="statActiveRatio">0 active</span>
+        </div>
+      </div>
+
+      <div class="bg-[#0c1222] border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Total Sales</div>
+        <div class="mt-2 flex items-baseline justify-between">
+          <span class="text-2xl sm:text-3xl font-bold font-mono tabular-nums text-orange-400" id="statTotalRevenue">₵0.00</span>
+          <span class="text-xs text-slate-400">GHS</span>
+        </div>
+      </div>
+
+      <div class="bg-[#0c1222] border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Customer Sessions</div>
+        <div class="mt-2 flex items-baseline justify-between">
+          <span class="text-2xl sm:text-3xl font-bold font-mono tabular-nums text-white" id="statSessionsCount">0</span>
+          <span class="text-xs text-slate-400">In-memory chats</span>
+        </div>
+      </div>
+
+      <div class="bg-[#0c1222] border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Bot Events Processed</div>
+        <div class="mt-2 flex items-baseline justify-between">
+          <span class="text-2xl sm:text-3xl font-bold font-mono tabular-nums text-emerald-400" id="statActivitiesCount">0</span>
+          <span class="text-xs text-emerald-500/80">Live buffer</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- MAIN TWO-COLUMN SPLIT: ORDERS vs REAL-TIME ACTIVITIES -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+
+      <!-- LEFT: ORDERS LIST (7 Cols on desktop) -->
+      <section class="lg:col-span-7 space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 class="text-base font-semibold text-white">Live Food Orders</h2>
+            <p class="text-xs text-slate-400">Real-time incoming orders from Lapaz branch WhatsApp customers</p>
+          </div>
+
+          <!-- Order Status Filter Tabs -->
+          <div class="flex items-center gap-1 bg-[#11192e] p-1 rounded-lg border border-slate-800 text-xs overflow-x-auto">
+            <button onclick="setOrderFilter('all')" id="order-filter-all" class="order-filter-btn px-2.5 py-1 rounded font-medium bg-slate-800 text-white">All</button>
+            <button onclick="setOrderFilter('NEW')" id="order-filter-NEW" class="order-filter-btn px-2.5 py-1 rounded font-medium text-slate-400 hover:text-slate-200">New</button>
+            <button onclick="setOrderFilter('PREPARING')" id="order-filter-PREPARING" class="order-filter-btn px-2.5 py-1 rounded font-medium text-slate-400 hover:text-slate-200">Preparing</button>
+            <button onclick="setOrderFilter('READY')" id="order-filter-READY" class="order-filter-btn px-2.5 py-1 rounded font-medium text-slate-400 hover:text-slate-200">Ready</button>
+            <button onclick="setOrderFilter('OUT_FOR_DELIVERY')" id="order-filter-OUT_FOR_DELIVERY" class="order-filter-btn px-2.5 py-1 rounded font-medium text-slate-400 hover:text-slate-200">In Transit</button>
+            <button onclick="setOrderFilter('CANCELLED')" id="order-filter-CANCELLED" class="order-filter-btn px-2.5 py-1 rounded font-medium text-slate-400 hover:text-slate-200">Cancelled</button>
+          </div>
+        </div>
+
+        <!-- Orders Container -->
+        <div id="ordersList" class="space-y-3">
+          <!-- Populated dynamically -->
+          <div class="bg-[#0c1222] border border-slate-800/80 rounded-xl p-8 text-center text-slate-500 text-sm">
+            Loading orders...
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT: LIVE ACTIVITIES FEED (5 Cols on desktop) -->
+      <section class="lg:col-span-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-base font-semibold text-white">Bot Activity Feed</h2>
+            <p class="text-xs text-slate-400">Inbound messages, webhook calls, dispatches & errors</p>
+          </div>
+
+          <!-- Activity Category Filter -->
+          <select id="activityTypeFilter" onchange="loadActivities()" class="text-xs bg-[#11192e] border border-slate-800 rounded-lg px-2.5 py-1 text-slate-300 focus:outline-none focus:border-slate-700">
+            <option value="all">All Events</option>
+            <option value="order">Orders Only</option>
+            <option value="text">Customer Texts</option>
+            <option value="webhook">Webhooks</option>
+            <option value="staff">Staff Actions</option>
+            <option value="send">Dispatched WA</option>
+            <option value="error">Errors Only</option>
+          </select>
+        </div>
+
+        <!-- Activity Stream Card -->
+        <div class="bg-[#0c1222] border border-slate-800/80 rounded-xl overflow-hidden flex flex-col h-[640px]">
+          <div class="p-3 bg-[#11192e]/60 border-b border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+            <span class="flex items-center gap-1.5 font-medium">
+              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+              Live Event Bus
+            </span>
+            <button onclick="clearActivityView()" class="hover:text-slate-200 transition-colors">Clear View</button>
+          </div>
+
+          <!-- Activity List (scrollable) -->
+          <div id="activityFeed" class="flex-1 overflow-y-auto p-3 space-y-2 font-mono text-xs">
+            <!-- Populated dynamically -->
+            <div class="text-slate-500 p-4 text-center">Connecting to bot activity stream...</div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- QUICK SIMULATION & TESTING STRIP -->
+    <div class="bg-[#0c1222] border border-slate-800/80 rounded-xl p-5 mt-6">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h3 class="text-sm font-semibold text-white">Bot Interaction Simulator</h3>
+          <p class="text-xs text-slate-400 mt-0.5">Test how the bot responds to customer messages and creates orders in real-time</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <button onclick="simulateText('hi')" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-[#11192e] hover:bg-slate-800 border border-slate-800 text-slate-200 transition-colors">
+            Send "hi"
+          </button>
+          <button onclick="simulateText('menu')" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-[#11192e] hover:bg-slate-800 border border-slate-800 text-slate-200 transition-colors">
+            Send "menu"
+          </button>
+          <button onclick="simulatePresetOrder('Jollof Rice', 40, 1, 'delivery')" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-orange-950/40 hover:bg-orange-900/50 border border-orange-800/40 text-orange-200 transition-colors">
+            + Order ₵40 Jollof (Delivery)
+          </button>
+          <button onclick="simulatePresetOrder('Fried Rice', 50, 2, 'pickup')" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-950/40 hover:bg-amber-900/50 border border-amber-800/40 text-amber-200 transition-colors">
+            + Order ₵50 Fried Rice (Pickup)
+          </button>
+          <button onclick="simulateText('report')" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-[#11192e] hover:bg-slate-800 border border-slate-800 text-slate-300 transition-colors">
+            Staff "report"
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- MODAL: SIMULATE CUSTOM ORDER -->
+  <div id="simulateModal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-[#0c1222] border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-sm font-bold text-white">Simulate Customer Order</h3>
+        <button onclick="closeSimulateModal()" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+
+      <form onsubmit="handleCustomSimulateOrder(event)" class="space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-400 mb-1">Customer Name</label>
+          <input type="text" id="simName" value="Kwame Mensah" class="w-full bg-[#11192e] border border-slate-800 rounded-lg p-2 text-white focus:outline-none focus:border-orange-500">
+        </div>
+        <div>
+          <label class="block text-slate-400 mb-1">Customer Phone Number</label>
+          <input type="text" id="simPhone" value="233245678901" class="w-full bg-[#11192e] border border-slate-800 rounded-lg p-2 text-white font-mono focus:outline-none focus:border-orange-500">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 mb-1">Food Choice</label>
+            <select id="simFood" class="w-full bg-[#11192e] border border-slate-800 rounded-lg p-2 text-white focus:outline-none focus:border-orange-500">
+              <option value="Jollof Rice">Jollof Rice</option>
+              <option value="Fried Rice">Fried Rice</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">Portion / Price</label>
+            <select id="simPrice" class="w-full bg-[#11192e] border border-slate-800 rounded-lg p-2 text-white focus:outline-none focus:border-orange-500">
+              <option value="30">₵30 (1 Chicken)</option>
+              <option value="40" selected>₵40 (1 Chicken)</option>
+              <option value="50">₵50 (2 Chicken)</option>
+              <option value="60">₵60 (3 Chicken)</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="block text-slate-400 mb-1">Fulfillment Method</label>
+          <div class="flex gap-4 mt-1">
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="simFulfillment" value="delivery" checked onchange="toggleAddressField(true)">
+              <span>Delivery (Pay on Delivery)</span>
+            </label>
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="simFulfillment" value="pickup" onchange="toggleAddressField(false)">
+              <span>Pick Up</span>
+            </label>
+          </div>
+        </div>
+        <div id="simAddressWrapper">
+          <label class="block text-slate-400 mb-1">Delivery Address</label>
+          <input type="text" id="simAddress" value="Lapaz Total Filling Station, Shop 2" class="w-full bg-[#11192e] border border-slate-800 rounded-lg p-2 text-white focus:outline-none focus:border-orange-500">
+        </div>
+
+        <div class="pt-3 flex justify-end gap-2 border-t border-slate-800">
+          <button type="button" onclick="closeSimulateModal()" class="px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400 hover:text-white">Cancel</button>
+          <button type="submit" class="px-4 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-500 text-white font-medium">Place Test Order</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: EXPORT PDF REPORTS -->
+  <div id="exportModal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-[#0c1222] border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-sm font-bold text-white">Export Order PDF Report</h3>
+        <button onclick="closeExportModal()" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+
+      <p class="text-xs text-slate-400">
+        Generate and download official PDF order reports using the built-in PDFKit generator for Sweet Bite (Lapaz Branch).
+      </p>
+
+      <div class="grid grid-cols-1 gap-2.5 pt-2">
+        <a href="/api/reports/download?period=daily" target="_blank" class="flex items-center justify-between p-3 rounded-xl bg-[#11192e] border border-slate-800 hover:border-slate-700 text-slate-200 transition-colors">
+          <div>
+            <div class="text-xs font-semibold text-white">Daily Report (Today)</div>
+            <div class="text-[11px] text-slate-400">Orders placed since midnight today</div>
+          </div>
+          <span class="text-xs font-medium text-orange-400">Download PDF &rarr;</span>
+        </a>
+
+        <a href="/api/reports/download?period=weekly" target="_blank" class="flex items-center justify-between p-3 rounded-xl bg-[#11192e] border border-slate-800 hover:border-slate-700 text-slate-200 transition-colors">
+          <div>
+            <div class="text-xs font-semibold text-white">Weekly Report (This Week)</div>
+            <div class="text-[11px] text-slate-400">Orders from Monday to present</div>
+          </div>
+          <span class="text-xs font-medium text-orange-400">Download PDF &rarr;</span>
+        </a>
+
+        <a href="/api/reports/download?period=monthly" target="_blank" class="flex items-center justify-between p-3 rounded-xl bg-[#11192e] border border-slate-800 hover:border-slate-700 text-slate-200 transition-colors">
+          <div>
+            <div class="text-xs font-semibold text-white">Monthly Report (This Month)</div>
+            <div class="text-[11px] text-slate-400">Orders from 1st of this month</div>
+          </div>
+          <span class="text-xs font-medium text-orange-400">Download PDF &rarr;</span>
+        </a>
+      </div>
+
+      <div class="pt-3 flex justify-end">
+        <button onclick="closeExportModal()" class="px-4 py-1.5 text-xs rounded-lg border border-slate-800 text-slate-400 hover:text-white">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: WEBHOOK & META CONFIGURATION HELPER -->
+  <div id="webhookModal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-[#0c1222] border border-slate-800 rounded-2xl w-full max-w-lg p-6 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-sm font-bold text-white">WhatsApp Cloud API Webhook Configuration</h3>
+        <button onclick="closeWebhookModal()" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+
+      <div class="space-y-3 text-xs">
+        <p class="text-slate-400">
+          Configure these values in your <strong class="text-slate-200">Meta for Developers Console</strong> under WhatsApp &rarr; Configuration:
+        </p>
+
+        <div class="space-y-1">
+          <label class="text-slate-400 font-medium">Callback URL</label>
+          <div class="flex items-center gap-2">
+            <input type="text" readonly id="webhookUrlInput" class="w-full bg-[#11192e] border border-slate-800 rounded-lg p-2 text-white font-mono text-xs select-all">
+            <button onclick="copyToClipboard('webhookUrlInput')" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs whitespace-nowrap">Copy</button>
+          </div>
+        </div>
+
+        <div class="space-y-1">
+          <label class="text-slate-400 font-medium">Verify Token (WHATSAPP_VERIFY_TOKEN)</label>
+          <div class="flex items-center gap-2">
+            <input type="text" readonly value="sweetbite_verify_token" id="verifyTokenInput" class="w-full bg-[#11192e] border border-slate-800 rounded-lg p-2 text-white font-mono text-xs select-all">
+            <button onclick="copyToClipboard('verifyTokenInput')" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs whitespace-nowrap">Copy</button>
+          </div>
+        </div>
+
+        <div class="p-3 bg-slate-900/80 rounded-lg border border-slate-800 text-slate-400 space-y-1.5">
+          <div class="font-semibold text-slate-200">Webhook Subscription Fields:</div>
+          <div>Subscribe to <code class="text-orange-400 bg-slate-950 px-1 py-0.5 rounded">messages</code> field on Meta WhatsApp Cloud API.</div>
+        </div>
+      </div>
+
+      <div class="pt-3 flex justify-end">
+        <button onclick="closeWebhookModal()" class="px-4 py-1.5 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST NOTIFICATION CONTAINER -->
+  <div id="toastContainer" class="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none"></div>
+
+  <!-- CLIENT-SIDE APPLICATION JAVASCRIPT -->
+  <script>
+    let autoRefresh = true;
+    let refreshInterval = null;
+    let currentOrderFilter = 'all';
+    let previousOrders = [];
+
+    // Initialize webhook URL based on current origin
+    document.getElementById('webhookUrlInput').value = `${window.location.origin}/webhook`;
+
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      toast.className = `p-3 text-xs rounded-lg border shadow-xl flex items-center gap-2 transition-all transform duration-300 pointer-events-auto ${
+        type === 'success' ? 'bg-emerald-950 border-emerald-800 text-emerald-200' :
+        type === 'error' ? 'bg-red-950 border-red-800 text-red-200' :
+        'bg-[#11192e] border-slate-800 text-slate-200'
+      }`;
+      toast.innerHTML = `<span>${message}</span>`;
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 300);
+      }, 3500);
+    }
+
+    function formatTimeAgo(isoString) {
+      if (!isoString) return 'recently';
+      const date = new Date(isoString);
+      const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (seconds < 60) return `${Math.max(1, seconds)}s ago`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours}h ago`;
+      return date.toLocaleDateString();
+    }
+
+    function formatUptime(seconds) {
+      if (!seconds) return '0s';
+      const s = Math.floor(seconds);
+      const m = Math.floor(s / 60);
+      const h = Math.floor(m / 60);
+      if (h > 0) return `${h}h ${m % 60}m`;
+      if (m > 0) return `${m}m ${s % 60}s`;
+      return `${s}s`;
+    }
+
+    function formatMoney(amount) {
+      return `₵${Number(amount || 0).toFixed(2)}`;
+    }
+
+    // TAB SWITCHING
+    function switchTab(tabId) {
+      document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.classList.remove('bg-slate-800', 'text-white', 'shadow-sm');
+        btn.classList.add('text-slate-400');
+      });
+      const activeBtn = document.getElementById(`nav-${tabId}`);
+      if (activeBtn) {
+        activeBtn.classList.add('bg-slate-800', 'text-white', 'shadow-sm');
+        activeBtn.classList.remove('text-slate-400');
+      }
+
+      if (tabId === 'webhook-info') {
+        openWebhookModal();
+      } else if (tabId === 'simulator') {
+        openSimulateModal();
+      } else if (tabId === 'activities') {
+        const feedElem = document.getElementById('activityFeed');
+        if (feedElem) feedElem.scrollIntoView({ behavior: 'smooth' });
+      }
+    }
+
+    // ORDER FILTERING
+    function setOrderFilter(filter) {
+      currentOrderFilter = filter;
+      document.querySelectorAll('.order-filter-btn').forEach(btn => {
+        btn.classList.remove('bg-slate-800', 'text-white');
+        btn.classList.add('text-slate-400');
+      });
+      const targetBtn = document.getElementById(`order-filter-${filter}`);
+      if (targetBtn) {
+        targetBtn.classList.add('bg-slate-800', 'text-white');
+        targetBtn.classList.remove('text-slate-400');
+      }
+      renderOrders(previousOrders);
+    }
+
+    // FETCH STATS
+    async function loadStats() {
+      try {
+        const res = await fetch('/api/stats');
+        const data = await res.json();
+        if (data.ok) {
+          document.getElementById('statOrdersCount').textContent = data.ordersCount;
+          document.getElementById('statActiveRatio').textContent = `${data.activeOrdersCount} active`;
+          document.getElementById('statTotalRevenue').textContent = formatMoney(data.totalRevenue);
+          document.getElementById('statSessionsCount').textContent = data.sessionsCount;
+          document.getElementById('statActivitiesCount').textContent = data.activitiesCount;
+          document.getElementById('statUptime').textContent = formatUptime(data.uptime);
+          document.getElementById('headerBranch').textContent = `${data.branch} Operations ${data.branchNumber ? '(+' + data.branchNumber + ')' : ''}`;
+          
+          const storageElem = document.getElementById('storageModeBadge');
+          if (data.supabaseConfigured) {
+            storageElem.innerHTML = 'Storage: <span class="text-emerald-400 font-medium">Supabase Connected</span>';
+          } else {
+            storageElem.innerHTML = 'Storage: <span class="text-amber-400 font-medium">In-Memory Active</span>';
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load stats:', err);
+      }
+    }
+
+    // FETCH ORDERS
+    async function loadOrders() {
+      try {
+        const res = await fetch('/orders');
+        const orders = await res.json();
+        previousOrders = orders;
+        renderOrders(orders);
+      } catch (err) {
+        console.error('Failed to load orders:', err);
+      }
+    }
+
+    function renderOrders(orders) {
+      const container = document.getElementById('ordersList');
+      if (!orders || orders.length === 0) {
+        container.innerHTML = `
+          <div class="bg-[#0c1222] border border-slate-800/80 rounded-xl p-8 text-center space-y-3">
+            <div class="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center mx-auto text-slate-500">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/></svg>
+            </div>
+            <div class="text-sm font-semibold text-slate-300">No Orders Placed Yet</div>
+            <p class="text-xs text-slate-500 max-w-sm mx-auto">When customers message your WhatsApp number, orders appear here automatically.</p>
+            <button onclick="simulatePresetOrder('Jollof Rice', 40, 1, 'delivery')" class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-orange-600 hover:bg-orange-500 text-white transition-colors shadow-sm">
+              Simulate First Order
+            </button>
+          </div>
+        `;
+        return;
+      }
+
+      // Filter
+      let filtered = orders;
+      if (currentOrderFilter !== 'all') {
+        filtered = orders.filter(o => String(o.status || '').toUpperCase() === currentOrderFilter);
+      }
+
+      // Sort newest first
+      filtered.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+      if (filtered.length === 0) {
+        container.innerHTML = `
+          <div class="bg-[#0c1222] border border-slate-800/80 rounded-xl p-6 text-center text-slate-500 text-xs">
+            No orders matching filter "<span class="font-medium text-slate-400">${currentOrderFilter}</span>".
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = filtered.map(order => {
+        const isCancelled = String(order.status || '').toUpperCase() === 'CANCELLED';
+        const isDone = String(order.status || '').toUpperCase() === 'PICKED_UP';
+        const statusUpper = String(order.status || 'NEW').toUpperCase();
+
+        const statusColors = {
+          'NEW': 'bg-amber-950/60 text-amber-300 border-amber-800/50',
+          'PREPARING': 'bg-blue-950/60 text-blue-300 border-blue-800/50',
+          'READY': 'bg-emerald-950/60 text-emerald-300 border-emerald-800/50',
+          'OUT_FOR_DELIVERY': 'bg-purple-950/60 text-purple-300 border-purple-800/50',
+          'PICKED_UP': 'bg-slate-800 text-slate-300 border-slate-700',
+          'CANCELLED': 'bg-red-950/60 text-red-400 border-red-800/50'
+        };
+
+        const badgeClass = statusColors[statusUpper] || statusColors['NEW'];
+
+        return `
+          <div class="bg-[#0c1222] border border-slate-800/80 hover:border-slate-700/80 transition-colors rounded-xl p-4 sm:p-5 space-y-3 ${isCancelled ? 'opacity-70 bg-red-950/10' : ''}">
+            
+            <!-- Order Header Line -->
+            <div class="flex items-start justify-between gap-2">
+              <div class="space-y-0.5">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono font-bold text-sm text-white">${order.id}</span>
+                  <span class="text-xs text-slate-500">·</span>
+                  <span class="text-xs text-slate-400 font-mono tabular-nums">${formatTimeAgo(order.createdAt)}</span>
+                </div>
+                <div class="text-xs text-slate-400 flex items-center gap-1.5">
+                  <span class="font-medium text-slate-300">${order.customerName || 'Customer'}</span>
+                  <span>·</span>
+                  <span class="font-mono text-slate-400">${order.customerPhone ? '+' + order.customerPhone.replace(/^bsuid:/, '') : '-'}</span>
+                </div>
+              </div>
+
+              <!-- Status Badge -->
+              <div class="text-right">
+                <span class="inline-block px-2.5 py-0.5 text-xs font-semibold rounded-full border ${badgeClass}">
+                  ${statusUpper.replace(/_/g, ' ')}
+                </span>
+                <div class="text-sm font-bold font-mono tabular-nums mt-1 ${isCancelled ? 'line-through text-slate-500' : 'text-white'}">
+                  ${formatMoney(order.total)}
+                </div>
+              </div>
+            </div>
+
+            <!-- Food Item Details -->
+            <div class="bg-[#11192e] rounded-lg p-3 text-xs border border-slate-800 flex items-start justify-between gap-3">
+              <div>
+                <div class="font-semibold text-slate-200">${order.food}</div>
+                <div class="text-slate-400 mt-0.5">
+                  ${order.includedChicken ? `Includes ${order.includedChicken} Chicken Portion` : ''}
+                  ${order.soup ? ` · Soup: ${order.soup}` : ''}
+                </div>
+              </div>
+              <div class="text-right shrink-0">
+                <span class="text-xs font-medium ${order.fulfillment === 'delivery' ? 'text-amber-400' : 'text-emerald-400'}">
+                  ${order.fulfillment === 'delivery' ? '🚚 Pay on Delivery' : '📦 Lapaz Pickup'}
+                </span>
+              </div>
+            </div>
+
+            <!-- Address (if delivery) -->
+            ${order.fulfillment === 'delivery' && order.address ? `
+              <div class="text-xs text-slate-400 bg-slate-900/50 p-2 rounded border border-slate-800/60 flex items-start gap-1.5">
+                <span class="text-slate-500 shrink-0">📍</span>
+                <span class="text-slate-300">${order.address}</span>
+              </div>
+            ` : ''}
+
+            <!-- Staff Action Buttons (Working controls) -->
+            ${!isCancelled && !isDone ? `
+              <div class="pt-2 flex flex-wrap items-center gap-1.5 border-t border-slate-800/60 text-xs">
+                <span class="text-slate-500 mr-1 text-[11px] uppercase tracking-wider font-semibold">Staff Actions:</span>
+                ${statusUpper === 'NEW' ? `
+                  <button onclick="updateOrderStatus('${order.id}', 'PREPARING')" class="px-2.5 py-1 rounded bg-blue-900/50 hover:bg-blue-800 border border-blue-700/60 text-blue-200 transition-colors">
+                    👨‍🍳 Mark Preparing
+                  </button>
+                ` : ''}
+                ${statusUpper === 'PREPARING' ? `
+                  <button onclick="updateOrderStatus('${order.id}', 'READY')" class="px-2.5 py-1 rounded bg-emerald-900/50 hover:bg-emerald-800 border border-emerald-700/60 text-emerald-200 transition-colors">
+                    ✅ Food Ready
+                  </button>
+                ` : ''}
+                ${statusUpper === 'READY' && order.fulfillment === 'delivery' ? `
+                  <button onclick="updateOrderStatus('${order.id}', 'OUT_FOR_DELIVERY')" class="px-2.5 py-1 rounded bg-purple-900/50 hover:bg-purple-800 border border-purple-700/60 text-purple-200 transition-colors">
+                    🚴 Rider On Way
+                  </button>
+                ` : ''}
+                ${(statusUpper === 'READY' || statusUpper === 'OUT_FOR_DELIVERY') ? `
+                  <button onclick="updateOrderStatus('${order.id}', 'PICKED_UP')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition-colors">
+                    📦 Completed / Delivered
+                  </button>
+                ` : ''}
+                <button onclick="updateOrderStatus('${order.id}', 'CANCELLED')" class="px-2 py-1 rounded bg-red-950/40 hover:bg-red-900/50 border border-red-800/40 text-red-300 transition-colors ml-auto">
+                  Cancel
+                </button>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    // UPDATE ORDER STATUS (FROM DASHBOARD STAFF ACTION)
+    async function updateOrderStatus(orderId, newStatus) {
+      try {
+        const res = await fetch(`/api/orders/${orderId}/status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast(`Order ${orderId} marked as ${newStatus}`, 'success');
+          loadOrders();
+          loadStats();
+          loadActivities();
+        } else {
+          showToast(data.error || 'Failed to update order', 'error');
+        }
+      } catch (err) {
+        showToast('Network error updating order', 'error');
+      }
+    }
+
+    // FETCH ACTIVITIES
+    async function loadActivities() {
+      try {
+        const type = document.getElementById('activityTypeFilter').value;
+        const res = await fetch(`/api/activities?type=${type}&limit=60`);
+        const data = await res.json();
+        if (data.ok) {
+          renderActivities(data.activities);
+          document.getElementById('lastSyncTime').textContent = new Date().toLocaleTimeString();
+        }
+      } catch (err) {
+        console.error('Failed to load activities:', err);
+      }
+    }
+
+    function renderActivities(activities) {
+      const container = document.getElementById('activityFeed');
+      if (!activities || activities.length === 0) {
+        container.innerHTML = `<div class="p-6 text-center text-slate-500">No activity recorded yet</div>`;
+        return;
+      }
+
+      container.innerHTML = activities.map(act => {
+        const isErr = act.isError || act.type === 'error';
+        const tagColors = {
+          'webhook': 'text-purple-400 bg-purple-950/40 border-purple-800/40',
+          'order': 'text-orange-400 bg-orange-950/40 border-orange-800/40',
+          'text': 'text-blue-400 bg-blue-950/40 border-blue-800/40',
+          'interactive': 'text-cyan-400 bg-cyan-950/40 border-cyan-800/40',
+          'staff': 'text-emerald-400 bg-emerald-950/40 border-emerald-800/40',
+          'send': 'text-amber-400 bg-amber-950/40 border-amber-800/40',
+          'system': 'text-slate-400 bg-slate-900 border-slate-800',
+          'error': 'text-red-400 bg-red-950/40 border-red-800/40'
+        };
+        const colorClass = tagColors[act.type] || tagColors['system'];
+
+        return `
+          <div class="p-2.5 rounded-lg border bg-[#0a0f1d] hover:bg-[#11192e] transition-colors border-slate-800/80 space-y-1">
+            <div class="flex items-center justify-between gap-2">
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold border ${colorClass}">
+                ${act.tag || act.type}
+              </span>
+              <span class="text-[11px] text-slate-500 tabular-nums">${act.time || ''}</span>
+            </div>
+            <div class="text-xs break-words ${isErr ? 'text-red-300 font-medium' : 'text-slate-300'}">
+              ${escapeHtml(act.message)}
+            </div>
+            ${act.data ? `
+              <div class="text-[11px] text-slate-500 bg-black/40 p-1.5 rounded overflow-x-auto">
+                <pre class="font-mono">${escapeHtml(JSON.stringify(act.data, null, 2))}</pre>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function clearActivityView() {
+      document.getElementById('activityFeed').innerHTML = `
+        <div class="p-4 text-center text-slate-500 text-xs">
+          View cleared. New events will appear as they occur.
+        </div>
+      `;
+    }
+
+    // SIMULATE TEXT (e.g. 'hi', 'menu')
+    async function simulateText(text) {
+      try {
+        showToast(`Simulating message "${text}"...`, 'info');
+        const res = await fetch('/api/simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'text', text, phone: '233241882200', customerName: 'Simulated User' })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast(data.message, 'success');
+          loadActivities();
+          loadStats();
+        }
+      } catch (err) {
+        showToast('Simulation failed', 'error');
+      }
+    }
+
+    // SIMULATE PRESET ORDER
+    async function simulatePresetOrder(food, amount, chicken, fulfillment) {
+      try {
+        showToast(`Simulating order for ${food} (${formatMoney(amount)})...`, 'info');
+        const res = await fetch('/api/simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'order',
+            food,
+            amount,
+            chicken,
+            fulfillment,
+            customerName: 'Kofi Mensah',
+            phone: '233244889900',
+            address: fulfillment === 'delivery' ? 'Lapaz New Market, Store #14' : null
+          })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast(`Order created successfully! (${data.order?.id})`, 'success');
+          loadOrders();
+          loadStats();
+          loadActivities();
+        }
+      } catch (err) {
+        showToast('Failed to simulate order', 'error');
+      }
+    }
+
+    // CUSTOM ORDER FORM SUBMIT
+    async function handleCustomSimulateOrder(e) {
+      e.preventDefault();
+      const customerName = document.getElementById('simName').value;
+      const phone = document.getElementById('simPhone').value;
+      const food = document.getElementById('simFood').value;
+      const amount = Number(document.getElementById('simPrice').value);
+      const chicken = amount === 30 ? 1 : amount === 40 ? 1 : amount === 50 ? 2 : 3;
+      const fulfillment = document.querySelector('input[name="simFulfillment"]:checked').value;
+      const address = document.getElementById('simAddress').value;
+
+      try {
+        const res = await fetch('/api/simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'order',
+            customerName,
+            phone,
+            food,
+            amount,
+            chicken,
+            fulfillment,
+            address: fulfillment === 'delivery' ? address : null
+          })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast(`Order ${data.order?.id} created!`, 'success');
+          closeSimulateModal();
+          loadOrders();
+          loadStats();
+          loadActivities();
+        }
+      } catch (err) {
+        showToast('Error placing simulated order', 'error');
+      }
+    }
+
+    function toggleAddressField(show) {
+      document.getElementById('simAddressWrapper').style.display = show ? 'block' : 'none';
+    }
+
+    // MODAL HELPERS
+    function openSimulateModal() {
+      document.getElementById('simulateModal').classList.remove('hidden');
+      document.getElementById('simulateModal').classList.add('flex');
+    }
+    function closeSimulateModal() {
+      document.getElementById('simulateModal').classList.add('hidden');
+      document.getElementById('simulateModal').classList.remove('flex');
+    }
+
+    function openExportModal() {
+      document.getElementById('exportModal').classList.remove('hidden');
+      document.getElementById('exportModal').classList.add('flex');
+    }
+    function closeExportModal() {
+      document.getElementById('exportModal').classList.add('hidden');
+      document.getElementById('exportModal').classList.remove('flex');
+    }
+
+    function openWebhookModal() {
+      document.getElementById('webhookModal').classList.remove('hidden');
+      document.getElementById('webhookModal').classList.add('flex');
+    }
+    function closeWebhookModal() {
+      document.getElementById('webhookModal').classList.add('hidden');
+      document.getElementById('webhookModal').classList.remove('flex');
+    }
+
+    function copyToClipboard(elementId) {
+      const elem = document.getElementById(elementId);
+      elem.select();
+      navigator.clipboard.writeText(elem.value);
+      showToast('Copied to clipboard!', 'success');
+    }
+
+    function toggleAutoRefresh() {
+      autoRefresh = !autoRefresh;
+      const dot = document.getElementById('refreshDot');
+      const label = document.getElementById('refreshLabel');
+      if (autoRefresh) {
+        dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+        label.textContent = 'Live Sync';
+        startPolling();
+        showToast('Live auto-sync enabled (every 3s)');
+      } else {
+        dot.className = 'w-2 h-2 rounded-full bg-slate-600';
+        label.textContent = 'Paused';
+        clearInterval(refreshInterval);
+        showToast('Auto-sync paused');
+      }
+    }
+
+    function startPolling() {
+      clearInterval(refreshInterval);
+      refreshInterval = setInterval(() => {
+        loadStats();
+        loadOrders();
+        loadActivities();
+      }, 3000);
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // INITIAL LOAD
+    loadStats();
+    loadOrders();
+    loadActivities();
+    startPolling();
+  </script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const path = require("path");
 const express = require("express");
 const axios = require("axios");
 const FormData = require("form-data");
@@ -7,8 +8,9 @@ const { createReportPdf, getOrders, saveOrder, updateOrderStatus } = require("./
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+app.use(express.static(path.join(__dirname, "public")));
 
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 
 const {
   WHATSAPP_ACCESS_TOKEN,
@@ -26,18 +28,56 @@ const WA_URL =
   `https://graph.facebook.com/${GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
 /*--------------------------------------------------------------------------
- ➕ ADDED: LOGGING — every line is timestamped and tagged so you can follow
- what the bot is doing in the console (or your hosting provider's log tab).
+ ➕ ADDED: ACTIVITY BUFFER & LOGGING
+ Live dashboard can inspect activities buffer in real-time
 --------------------------------------------------------------------------*/
+const activities = [];
+const MAX_ACTIVITIES = 250;
+
 function ts() {
   return new Date().toISOString().slice(11, 19); // HH:MM:SS
 }
-function log(tag, ...args) {
-  console.log(`[${ts()}] ${tag}`, ...args);
+
+function classifyTag(tag) {
+  const t = String(tag || "").toLowerCase();
+  if (t.includes("webhook")) return "webhook";
+  if (t.includes("text")) return "text";
+  if (t.includes("interactive")) return "interactive";
+  if (t.includes("order")) return "order";
+  if (t.includes("staff")) return "staff";
+  if (t.includes("send")) return "send";
+  if (t.includes("report")) return "report";
+  if (t.includes("status")) return "status";
+  return "system";
 }
+
+function recordActivity(tag, type, message, data = null, isError = false) {
+  const activity = {
+    id: `act_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+    timestamp: new Date().toISOString(),
+    time: ts(),
+    tag,
+    type,
+    message: typeof message === "string" ? message : JSON.stringify(message),
+    data: data ? (typeof data === "object" ? data : { raw: data }) : null,
+    isError
+  };
+  activities.unshift(activity);
+  if (activities.length > MAX_ACTIVITIES) activities.pop();
+  return activity;
+}
+
+function log(tag, ...args) {
+  const str = args.map(a => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+  console.log(`[${ts()}] ${tag}`, ...args);
+  const data = args.length === 1 && typeof args[0] === "object" ? args[0] : null;
+  recordActivity(tag, classifyTag(tag), str, data, false);
+}
+
 function logError(tag, error) {
   const detail = error?.response?.data ? JSON.stringify(error.response.data) : (error?.message || error);
   console.error(`[${ts()}] ${tag} ❌`, detail);
+  recordActivity(tag, "error", typeof detail === "string" ? detail : JSON.stringify(detail), null, true);
 }
 
 // ➕ ADDED: if the process is about to crash or die, say so loudly BEFORE it goes down.
@@ -223,6 +263,12 @@ async function sendWhatsAppText(to, body) {
     text: { preview_url: false, body }
   };
   log("[send:text]", `-> ${to} :: ${String(body).replace(/\n/g, " | ").slice(0, 120)}`); // ➕ ADDED
+
+  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
+    log("[send:mock]", `Mock dispatch to ${to} (WhatsApp credentials not set in environment)`);
+    return { data: { mock: true } };
+  }
+
   try {
     return await axios.post(WA_URL, payload, {
       headers: {
@@ -231,22 +277,26 @@ async function sendWhatsAppText(to, body) {
       }
     });
   } catch (error) {
-    // ➕ ADDED: Meta error 131030 means this WhatsApp app is still in "Development" mode,
-    // which only allows sending to a short list of pre-approved test numbers. Receiving
-    // still works either way, which is exactly why a brand-new customer's message shows
-    // up in the logs but never gets a reply. Fix: Meta dashboard -> WhatsApp -> API Setup
-    // -> add the number as a tester, or switch the app to Live mode (needs Business Verification).
     if (error?.response?.data?.error?.code === 131030) {
       logError(`[send:text] to ${to} — RECIPIENT NOT ALLOWED (app is in Development mode; add ${to} as a test number in Meta's WhatsApp API Setup, or go Live)`, error);
+    } else if (error?.response?.status === 401) {
+      logError(`[send:text] to ${to} — Meta returned 401 Unauthorized (verify WHATSAPP_ACCESS_TOKEN in .env)`, error);
+      return { data: { unauthorized: true } };
     } else {
       logError(`[send:text] to ${to}`, error);
     }
-    throw error;
+    return { data: { failed: true } };
   }
 }
 
 async function sendWhatsAppDocument(to, pdfBuffer, filename, caption) {
   log("[send:doc]", `-> ${to} :: ${filename} (${pdfBuffer.length} bytes)`); // ➕ ADDED
+
+  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
+    log("[send:mock]", `Mock doc dispatch to ${to} (${filename})`);
+    return { data: { mock: true } };
+  }
+
   try {
     const form = new FormData();
     form.append("messaging_product", "whatsapp");
@@ -262,7 +312,7 @@ async function sendWhatsAppDocument(to, pdfBuffer, filename, caption) {
     return await axios.post(WA_URL, {
       messaging_product: "whatsapp",
       recipient_type: "individual",
-      ...addressingField(to), // ➕ CHANGED: phone -> "to", BSUID -> "recipient"
+      ...addressingField(to),
       type: "document",
       document: { id: upload.data.id, filename, caption }
     }, {
@@ -272,8 +322,8 @@ async function sendWhatsAppDocument(to, pdfBuffer, filename, caption) {
       }
     });
   } catch (error) {
-    logError(`[send:doc] to ${to}`, error); // ➕ ADDED
-    throw error;
+    logError(`[send:doc] to ${to}`, error);
+    return { data: { failed: true } };
   }
 }
 
@@ -285,7 +335,7 @@ async function sendButtons(to, body, buttons) {
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
-    ...addressingField(to), // ➕ CHANGED: phone -> "to", BSUID -> "recipient"
+    ...addressingField(to),
     type: "interactive",
     interactive: {
       type: "button",
@@ -298,6 +348,12 @@ async function sendButtons(to, body, buttons) {
       }
     }
   };
+
+  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
+    log("[send:mock]", `Mock buttons dispatch to ${to}`);
+    return { data: { mock: true } };
+  }
+
   try {
     return await axios.post(WA_URL, payload, {
       headers: {
@@ -306,8 +362,8 @@ async function sendButtons(to, body, buttons) {
       }
     });
   } catch (error) {
-    logError(`[send:buttons] to ${to}`, error); // ➕ ADDED
-    throw error;
+    logError(`[send:buttons] to ${to}`, error);
+    return { data: { failed: true } };
   }
 }
 
@@ -319,7 +375,7 @@ async function sendInteractiveList(to, body, section, rows, buttonText = "Select
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
-    ...addressingField(to), // ➕ CHANGED: phone -> "to", BSUID -> "recipient"
+    ...addressingField(to),
     type: "interactive",
     interactive: {
       type: "list",
@@ -339,6 +395,12 @@ async function sendInteractiveList(to, body, section, rows, buttonText = "Select
       }
     }
   };
+
+  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
+    log("[send:mock]", `Mock list dispatch to ${to}: ${section}`);
+    return { data: { mock: true } };
+  }
+
   try {
     return await axios.post(WA_URL, payload, {
       headers: {
@@ -347,8 +409,8 @@ async function sendInteractiveList(to, body, section, rows, buttonText = "Select
       }
     });
   } catch (error) {
-    logError(`[send:list] to ${to}`, error); // ➕ ADDED
-    throw error;
+    logError(`[send:list] to ${to}`, error);
+    return { data: { failed: true } };
   }
 }
 
@@ -1070,21 +1132,173 @@ app.post("/webhook", async (req, res) => {
 });
 
 /*--------------------------------------------------------------------------
- ROUTES
+ DASHBOARD & API ROUTES
 --------------------------------------------------------------------------*/
-app.get("/",       (req, res) => res.json({ ok: true, store: STORE_NAME, service: "Sweet Bite Food Ordering Bot", branch: BRANCH_NAME }));
+app.get("/", (req, res) => {
+  if (req.query.format === "json" || (req.headers.accept && req.headers.accept.includes("application/json") && !req.headers.accept.includes("text/html"))) {
+    return res.json({ ok: true, store: STORE_NAME, service: "Sweet Bite Food Ordering Bot", branch: BRANCH_NAME });
+  }
+  return res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
 app.get("/health", (req, res) => res.json({ ok: true, uptime: process.uptime(), sessions: sessions.size, orders: orders.size, branch: BRANCH_NAME }));
 app.get("/orders", (req, res) => res.json(Array.from(orders.values())));
+
+// Activity stream for live dashboard
+app.get("/api/activities", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 250);
+  const type = req.query.type;
+  let filtered = activities;
+  if (type && type !== "all") {
+    filtered = activities.filter(a => a.type === type || (type === "error" && a.isError));
+  }
+  res.json({
+    ok: true,
+    total: activities.length,
+    activities: filtered.slice(0, limit)
+  });
+});
+
+// Overview stats
+app.get("/api/stats", (req, res) => {
+  const allOrders = Array.from(orders.values());
+  const activeOrders = allOrders.filter(o => String(o.status || "").toUpperCase() !== "CANCELLED");
+  const totalRevenue = activeOrders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+
+  res.json({
+    ok: true,
+    store: STORE_NAME,
+    branch: BRANCH_NAME,
+    branchNumber: BRANCH_NUMBER || null,
+    uptime: process.uptime(),
+    sessionsCount: sessions.size,
+    ordersCount: allOrders.length,
+    activeOrdersCount: activeOrders.length,
+    totalRevenue,
+    activitiesCount: activities.length,
+    supabaseConfigured: !!process.env.SUPABASE_URL,
+    whatsappConfigured: !!process.env.WHATSAPP_PHONE_NUMBER_ID
+  });
+});
+
+// Update order status from dashboard staff controls
+app.post("/api/orders/:id/status", async (req, res) => {
+  const { id } = req.params;
+  const { status, action } = req.body;
+  const order = Array.from(orders.values()).find(item => item.id === id);
+  if (!order) return res.status(404).json({ error: `Order ${id} not found` });
+
+  if (status === "CANCELLED" || action === "cancel") {
+    order.status = "CANCELLED";
+    order.cancelledBy = "dashboard_staff";
+    order.cancelledAt = new Date().toISOString();
+    log("[staff]", `Dashboard staff cancelled order ${id}`);
+    try {
+      await updateOrderStatus(order, "CANCELLED");
+    } catch (e) {
+      logError("[staff:cancel]", e);
+    }
+    return res.json({ ok: true, order });
+  }
+
+  const validAction = action || (
+    status === "PREPARING" ? "prepare" :
+    status === "READY" ? "ready" :
+    status === "OUT_FOR_DELIVERY" ? "rider" :
+    status === "PICKED_UP" ? "pickup" :
+    null
+  );
+
+  if (validAction) {
+    try {
+      await handleStaffAction("dashboard_staff", validAction, id);
+      const updated = Array.from(orders.values()).find(item => item.id === id);
+      return res.json({ ok: true, order: updated });
+    } catch (err) {
+      logError("[staff:action]", err);
+      return res.status(500).json({ error: "Failed to perform staff action" });
+    }
+  }
+
+  return res.status(400).json({ error: "Invalid status or action provided" });
+});
+
+// Simulator endpoint: allow sending simulated WhatsApp interactions & orders
+app.post("/api/simulate", async (req, res) => {
+  const { action, phone = "233241882200", text = "hi", customerName = "Kofi Mensah", food = "Jollof Rice", amount = 40, chicken = 1, fulfillment = "delivery", address = "Lapaz Station Road, Flat 3B" } = req.body;
+
+  try {
+    if (action === "text") {
+      log("[webhook:simulate]", `Simulated message from ${customerName} (+${phone}): "${text}"`);
+      await handleText(phone, text);
+      return res.json({ ok: true, message: `Processed simulated text "${text}"` });
+    }
+
+    if (action === "order") {
+      const simSession = {
+        step: "CONFIRMATION",
+        food,
+        foodAmount: amount,
+        includedChicken: chicken,
+        fulfillment,
+        address: fulfillment === "delivery" ? address : null,
+        customerName,
+        customerUsername: customerName.toLowerCase().replace(/\s+/g, "")
+      };
+      log("[order:simulate]", `Simulated customer order: ${food} (${money(amount)}) for ${customerName}`);
+      await placeCustomerOrder(phone, simSession);
+      return res.json({ ok: true, message: "Simulated order placed successfully!", order: simSession.order });
+    }
+
+    return res.status(400).json({ error: "Unknown simulation action (expected 'text' or 'order')" });
+  } catch (error) {
+    logError("[simulate]", error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// PDF Report download directly from dashboard
+app.get("/api/reports/download", async (req, res) => {
+  try {
+    const period = ["daily", "weekly", "monthly"].includes(req.query.period) ? req.query.period : "daily";
+    const reportOrders = await getOrders(BRANCH_NAME, period, orders);
+    const pdfBuffer = await createReportPdf(BRANCH_NAME, period, reportOrders);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="sweet-bite-${BRANCH_NAME.toLowerCase()}-${period}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (error) {
+    logError("[report:download]", error);
+    res.status(500).json({ error: "Failed to generate report PDF" });
+  }
+});
 
 /*--------------------------------------------------------------------------
  START
 --------------------------------------------------------------------------*/
-app.get("/health", (req, res) => {
-  res.status(200).send("Bot is alive!");
-});
+app.listen(PORT, "0.0.0.0", () => {
+  log("[boot]", `🍛 ${STORE_NAME} food bot running on port ${PORT}`);
+  log("[boot]", `Branch: ${BRANCH_NAME} (+${normalizePhone(BRANCH_NUMBER) || "NOT SET"})`);
+  log("[boot]", `Supabase: ${process.env.SUPABASE_URL ? "configured" : "not configured (in-memory only)"}`);
+  log("[boot]", `Dashboard: live at http://0.0.0.0:${PORT}/`);
 
-app.listen(PORT, () => {
-  log("[boot]", `🍛 ${STORE_NAME} food bot running on port ${PORT}`); // ➕ CHANGED (was console.log)
-  log("[boot]", `Branch: ${BRANCH_NAME} (+${normalizePhone(BRANCH_NUMBER) || "NOT SET"})`); // ➕ CHANGED
-  log("[boot]", `Supabase: ${process.env.SUPABASE_URL ? "configured" : "not configured (in-memory only)"}`); // ➕ ADDED
+  // Seed sample initial order so the dashboard is immediately populated and illustrative
+  if (orders.size === 0) {
+    const seedOrder = {
+      id: "SB-01101830",
+      customerPhone: "233244112233",
+      customerName: "Akosua Addo",
+      customerUsername: "akosua_a",
+      branch: BRANCH_NAME,
+      food: "Jollof Rice",
+      basePrice: 50,
+      includedChicken: 2,
+      total: 50,
+      fulfillment: "delivery",
+      address: "Lapaz Abrantie Junction, House #12",
+      status: "PREPARING",
+      createdAt: new Date(Date.now() - 15 * 60 * 1000).toISOString()
+    };
+    orders.set(seedOrder.id, seedOrder);
+    log("[order:new]", `Seed demo order ${seedOrder.id} initialized for dashboard display`);
+  }
 });
