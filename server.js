@@ -1,10 +1,19 @@
 require("dotenv").config();
 
 const path = require("path");
+const fs = require("fs");
 const express = require("express");
-const axios = require("axios");
-const FormData = require("form-data");
-const { createReportPdf, getOrders, saveOrder, updateOrderStatus } = require("./reports"); // ➕ ADDED updateOrderStatus
+const pino = require("pino");
+const QRCode = require("qrcode");
+const qrcodeTerminal = require("qrcode-terminal");
+const {
+  default: makeWASocket,
+  DisconnectReason,
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion
+} = require("@whiskeysockets/baileys");
+
+const { createReportPdf, getOrders, saveOrder, updateOrderStatus } = require("./reports");
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -13,23 +22,12 @@ app.use(express.static(path.join(__dirname, "public")));
 const PORT = process.env.PORT || 3000;
 
 const {
-  WHATSAPP_ACCESS_TOKEN,
-  WHATSAPP_PHONE_NUMBER_ID,
-  WHATSAPP_VERIFY_TOKEN,
-
   LAPAZ_BRANCH_NUMBER,
-
   STORE_NAME = "Sweet Bite"
 } = process.env;
 
-const GRAPH_VERSION = process.env.GRAPH_VERSION || "v23.0";
-
-const WA_URL =
-  `https://graph.facebook.com/${GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
-
 /*--------------------------------------------------------------------------
- ➕ ADDED: ACTIVITY BUFFER & LOGGING
- Live dashboard can inspect activities buffer in real-time
+ ACTIVITY BUFFER & LOGGING
 --------------------------------------------------------------------------*/
 const activities = [];
 const MAX_ACTIVITIES = 250;
@@ -40,9 +38,8 @@ function ts() {
 
 function classifyTag(tag) {
   const t = String(tag || "").toLowerCase();
-  if (t.includes("webhook")) return "webhook";
+  if (t.includes("baileys")) return "baileys";
   if (t.includes("text")) return "text";
-  if (t.includes("interactive")) return "interactive";
   if (t.includes("order")) return "order";
   if (t.includes("staff")) return "staff";
   if (t.includes("send")) return "send";
@@ -75,22 +72,19 @@ function log(tag, ...args) {
 }
 
 function logError(tag, error) {
-  const detail = error?.response?.data ? JSON.stringify(error.response.data) : (error?.message || error);
+  const detail = error?.message || (typeof error === "string" ? error : JSON.stringify(error));
   console.error(`[${ts()}] ${tag} ❌`, detail);
   recordActivity(tag, "error", typeof detail === "string" ? detail : JSON.stringify(detail), null, true);
 }
 
-// ➕ ADDED: if the process is about to crash or die, say so loudly BEFORE it goes down.
-// Without this, a crash mid-message looks identical to "the bot silently ignored this person" —
-// the log simply stops with no explanation, which is exactly what you were seeing.
 process.on("uncaughtException", (error) => {
-  logError("[crash] uncaughtException — process will exit", error);
+  logError("[crash] uncaughtException", error);
 });
 process.on("unhandledRejection", (reason) => {
-  logError("[crash] unhandledRejection (a promise failed with no .catch)", reason);
+  logError("[crash] unhandledRejection", reason);
 });
-process.on("SIGTERM", () => log("[boot]", "Received SIGTERM — host is stopping/restarting this process"));
-process.on("SIGINT",  () => log("[boot]", "Received SIGINT — process stopping"));
+process.on("SIGTERM", () => log("[boot]", "Received SIGTERM — stopping"));
+process.on("SIGINT",  () => log("[boot]", "Received SIGINT — stopping"));
 
 /*--------------------------------------------------------------------------
  BRANCH — only one branch, LAPAZ
@@ -99,18 +93,18 @@ const BRANCH_NAME = "Lapaz";
 const BRANCH_NUMBER = LAPAZ_BRANCH_NUMBER;
 
 /*--------------------------------------------------------------------------
- MENU — Jollof Rice & Fried Rice only, prices ₵30 - ₵50 (includes free chicken)
+ MENU — Jollof Rice & Fried Rice only, portions ₵30 - ₵60
 --------------------------------------------------------------------------*/
 const RICE_PORTIONS = [
-  { amount: 30, chicken: 1 },
-  { amount: 40, chicken: 1 },
-  { amount: 50, chicken: 2 },
-  { amount: 60, chicken: 3 }
+  { id: 1, amount: 30, chicken: 1 },
+  { id: 2, amount: 40, chicken: 1 },
+  { id: 3, amount: 50, chicken: 2 },
+  { id: 4, amount: 60, chicken: 3 }
 ];
 
 const FOODS = {
-  food_jollof: "Jollof Rice",
-  food_fried:  "Fried Rice"
+  1: "Jollof Rice",
+  2: "Fried Rice"
 };
 
 /*--------------------------------------------------------------------------
@@ -119,12 +113,9 @@ const FOODS = {
 const sessions = new Map();
 const orders   = new Map();
 
-// ➕ ADDED: remembers recently-seen WhatsApp message IDs so a retried delivery
-// (the exact scenario in your screenshot — same "Hi" delivered twice, 55s apart)
-// never gets processed twice. This matters most for order confirmations: without
-// this, a retried "Place Order" tap could create two orders from one tap.
-const PROCESSED_MESSAGE_TTL_MS = 30 * 60 * 1000; // 30 minutes is far longer than WhatsApp ever waits to retry
-const processedMessageIds = new Map(); // id -> timestamp seen
+// Deduplicate recently seen message IDs
+const PROCESSED_MESSAGE_TTL_MS = 30 * 60 * 1000;
+const processedMessageIds = new Map();
 setInterval(() => {
   const cutoff = Date.now() - PROCESSED_MESSAGE_TTL_MS;
   for (const [id, seenAt] of processedMessageIds) {
@@ -133,14 +124,14 @@ setInterval(() => {
 }, 5 * 60 * 1000).unref();
 
 function alreadyProcessed(messageId) {
-  if (!messageId) return false; // no id to dedupe on — let it through rather than risk blocking real messages
+  if (!messageId) return false;
   if (processedMessageIds.has(messageId)) return true;
   processedMessageIds.set(messageId, Date.now());
   return false;
 }
 
 /*--------------------------------------------------------------------------
- HELPERS
+ PHONE NUMBER HELPERS
 --------------------------------------------------------------------------*/
 function normalizePhone(value) {
   let phone = String(value || "").replace(/\D/g, "");
@@ -149,64 +140,9 @@ function normalizePhone(value) {
   return phone;
 }
 
-/*--------------------------------------------------------------------------
- ➕ ADDED: WhatsApp Business-Scoped User ID (BSUID) support.
-
- Meta is rolling out WhatsApp usernames. When a customer has no phone number
- you're allowed to see (typically a brand-new customer — no message between
- you in the last 30 days), the webhook sends "from_user_id" (format
- "CC.alphanumeric", e.g. "GH.4853202848240472") INSTEAD OF "from". Outbound
- replies to that customer must then use the "recipient" field instead of
- "to". The old code only ever looked for "from", so these customers' messages
- were silently skipped and they never got a reply — this is the exact cause
- of "new first-time numbers get nothing".
-
- Internally we key sessions/orders on either a normal digit phone string, or
- "bsuid:<the raw BSUID>" so the two id spaces can never collide.
---------------------------------------------------------------------------*/
-const BSUID_PREFIX = "bsuid:";
-
-function isBsuidValue(value) {
-  return typeof value === "string" && /^[A-Za-z]{2,4}\.[A-Za-z0-9]{1,128}$/.test(value);
-}
-
-function isBsuidId(id) {
-  return typeof id === "string" && id.startsWith(BSUID_PREFIX);
-}
-
-function rawBsuid(id) {
-  return id.slice(BSUID_PREFIX.length);
-}
-
-// Resolves whichever identifier this particular message carries.
-// Returns null if neither a phone nor a valid BSUID is present.
-function customerIdFromMessage(message) {
-  if (message.from) return normalizePhone(message.from);
-  if (isBsuidValue(message.from_user_id)) return BSUID_PREFIX + message.from_user_id;
-  return null;
-}
-
-// Human-friendly form for messages shown to the branch/customer and for logs.
-function displayCustomerId(id) {
-  if (!id) return "unknown customer";
-  return isBsuidId(id) ? rawBsuid(id) : `+${id}`;
-}
-
-// ➕ ADDED: combines the customer's WhatsApp name/@username (if known) with their id,
-// e.g. "Kwame Mensah @kwame123 (GH.955939456943383)" instead of just the raw id.
-// Falls back to the plain id when no name/username was ever captured for them.
-function customerLabel(order) {
-  const idPart = displayCustomerId(order.customerPhone);
-  const namePart = order.customerName || null;
-  const userPart = order.customerUsername ? `@${String(order.customerUsername).replace(/^@/, "")}` : null;
-  const extras = [namePart, userPart].filter(Boolean).join(" ");
-  return extras ? `${extras} (${idPart})` : idPart;
-}
-
-// Builds the correct Cloud API addressing field for a send: phone numbers use
-// "to"; a customer we only know by BSUID must use "recipient" instead (never both).
-function addressingField(id) {
-  return isBsuidId(id) ? { recipient: rawBsuid(id) } : { to: id };
+function phoneToJid(phone) {
+  const clean = normalizePhone(phone);
+  return `${clean}@s.whatsapp.net`;
 }
 
 function money(amount) {
@@ -223,15 +159,14 @@ function getSession(phone) {
       fulfillment: null,
       address: null,
       order: null,
-      customerName: null,     // ➕ ADDED: WhatsApp display name, when Meta sends one
-      customerUsername: null // ➕ ADDED: WhatsApp @username, when the customer has set one
+      customerName: null
     });
   }
   return sessions.get(phone);
 }
 
 function resetSession(phone) {
-  const existing = sessions.get(phone); // ➕ ADDED: carry the name/username through a reset
+  const existing = sessions.get(phone);
   sessions.set(phone, {
     step: "WELCOME",
     food: null,
@@ -240,208 +175,176 @@ function resetSession(phone) {
     fulfillment: null,
     address: null,
     order: null,
-    customerName: existing?.customerName || null,         // ➕ ADDED
-    customerUsername: existing?.customerUsername || null  // ➕ ADDED
+    customerName: existing?.customerName || null
   });
 }
 
 function isBranchPhone(phone) {
   if (!BRANCH_NUMBER) return false;
-  if (isBsuidId(phone)) return false; // ➕ ADDED: a BSUID is never the branch's own phone line
   return normalizePhone(phone) === normalizePhone(BRANCH_NUMBER);
 }
 
 /*--------------------------------------------------------------------------
- WHATSAPP TEXT
+ BAILEYS WHATSAPP CLIENT (Zero Meta API Fees)
+--------------------------------------------------------------------------*/
+let sock = null;
+let isBaileysConnected = false;
+let connectedUser = null;
+let currentQr = null;
+let currentQrDataUrl = null;
+const authFolder = path.join(__dirname, "baileys_auth_info");
+
+async function startBaileys() {
+  try {
+    if (!fs.existsSync(authFolder)) {
+      fs.mkdirSync(authFolder, { recursive: true });
+    }
+
+    const { state, saveCreds } = await useMultiFileAuthState(authFolder);
+    const { version } = await fetchLatestBaileysVersion();
+
+    sock = makeWASocket({
+      version,
+      auth: state,
+      logger: pino({ level: "silent" }),
+      printQRInTerminal: false,
+      browser: ["Sweet Bite Food Bot", "Chrome", "1.0.0"]
+    });
+
+    sock.ev.on("creds.update", saveCreds);
+
+    sock.ev.on("connection.update", async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        currentQr = qr;
+        try {
+          currentQrDataUrl = await QRCode.toDataURL(qr, { margin: 2, scale: 6 });
+        } catch (e) {
+          logError("[baileys:qr]", e);
+        }
+        log("[baileys]", "🔑 New WhatsApp QR code generated! Scan it from WhatsApp on your phone or via the web dashboard.");
+        console.log("\n==================== SCAN THIS QR CODE WITH WHATSAPP ====================\n");
+        qrcodeTerminal.generate(qr, { small: true });
+        console.log("\n========================================================================\n");
+      }
+
+      if (connection === "close") {
+        isBaileysConnected = false;
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        log("[baileys]", `Connection closed (code: ${statusCode || "unknown"}). Reconnecting: ${shouldReconnect}`);
+
+        if (shouldReconnect) {
+          setTimeout(startBaileys, 4000);
+        } else {
+          log("[baileys]", "Logged out of WhatsApp. Clearing session credentials and requesting new QR code...");
+          try {
+            fs.rmSync(authFolder, { recursive: true, force: true });
+          } catch (err) {}
+          currentQr = null;
+          currentQrDataUrl = null;
+          connectedUser = null;
+          setTimeout(startBaileys, 3000);
+        }
+      } else if (connection === "open") {
+        isBaileysConnected = true;
+        currentQr = null;
+        currentQrDataUrl = null;
+        connectedUser = sock.user?.id ? sock.user.id.split(":")[0] : "connected";
+        log("[baileys]", `🎉 Connected to WhatsApp successfully! Logged in as +${connectedUser}`);
+      }
+    });
+
+    sock.ev.on("messages.upsert", async ({ messages }) => {
+      if (!messages || !messages.length) return;
+      for (const msg of messages) {
+        try {
+          if (msg.key.fromMe) continue;
+          if (msg.key.remoteJid === "status@broadcast") continue;
+          if (!msg.message) continue;
+
+          const messageId = msg.key.id;
+          if (alreadyProcessed(messageId)) {
+            log("[baileys]", `Duplicate message ${messageId} ignored`);
+            continue;
+          }
+
+          const remoteJid = msg.key.remoteJid;
+          const from = normalizePhone(remoteJid.replace(/@.+/, ""));
+          const customerName = msg.pushName || null;
+
+          // Extract text from conversation, extendedTextMessage, or image caption
+          const text =
+            msg.message.conversation ||
+            msg.message.extendedTextMessage?.text ||
+            msg.message.imageMessage?.caption ||
+            "";
+
+          if (!text || !text.trim()) continue;
+
+          await handleIncomingText(from, text.trim(), customerName);
+        } catch (err) {
+          logError("[baileys:upsert]", err);
+        }
+      }
+    });
+
+  } catch (error) {
+    logError("[baileys:start]", error);
+    setTimeout(startBaileys, 5000);
+  }
+}
+
+/*--------------------------------------------------------------------------
+ WHATSAPP OUTBOUND SENDING (BAILEYS)
 --------------------------------------------------------------------------*/
 async function sendWhatsAppText(to, body) {
-  const payload = {
-    messaging_product: "whatsapp",
-    recipient_type: "individual",
-    ...addressingField(to), // ➕ CHANGED: phone -> "to", BSUID -> "recipient"
-    type: "text",
-    text: { preview_url: false, body }
-  };
-  log("[send:text]", `-> ${to} :: ${String(body).replace(/\n/g, " | ").slice(0, 120)}`); // ➕ ADDED
+  log("[send:text]", `-> ${to} :: ${String(body).replace(/\n/g, " | ").slice(0, 120)}`);
 
-  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
-    log("[send:mock]", `Mock dispatch to ${to} (WhatsApp credentials not set in environment)`);
-    return { data: { mock: true } };
+  if (!sock || !isBaileysConnected) {
+    log("[send:mock]", `Mock dispatch to ${to} (WhatsApp client not connected yet)`);
+    return { mock: true };
   }
 
   try {
-    return await axios.post(WA_URL, payload, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    });
+    const jid = phoneToJid(to);
+    return await sock.sendMessage(jid, { text: body });
   } catch (error) {
-    if (error?.response?.data?.error?.code === 131030) {
-      logError(`[send:text] to ${to} — RECIPIENT NOT ALLOWED (app is in Development mode; add ${to} as a test number in Meta's WhatsApp API Setup, or go Live)`, error);
-    } else if (error?.response?.status === 401) {
-      logError(`[send:text] to ${to} — Meta returned 401 Unauthorized (verify WHATSAPP_ACCESS_TOKEN in .env)`, error);
-      return { data: { unauthorized: true } };
-    } else {
-      logError(`[send:text] to ${to}`, error);
-    }
-    return { data: { failed: true } };
+    logError(`[send:text] to ${to}`, error);
+    return { failed: true, error: error.message };
   }
 }
 
 async function sendWhatsAppDocument(to, pdfBuffer, filename, caption) {
-  log("[send:doc]", `-> ${to} :: ${filename} (${pdfBuffer.length} bytes)`); // ➕ ADDED
+  log("[send:doc]", `-> ${to} :: ${filename} (${pdfBuffer.length} bytes)`);
 
-  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
+  if (!sock || !isBaileysConnected) {
     log("[send:mock]", `Mock doc dispatch to ${to} (${filename})`);
-    return { data: { mock: true } };
+    return { mock: true };
   }
 
   try {
-    const form = new FormData();
-    form.append("messaging_product", "whatsapp");
-    form.append("type", "application/pdf");
-    form.append("file", pdfBuffer, { filename, contentType: "application/pdf" });
-
-    const upload = await axios.post(
-      `https://graph.facebook.com/${GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/media`,
-      form,
-      { headers: { Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`, ...form.getHeaders() } }
-    );
-
-    return await axios.post(WA_URL, {
-      messaging_product: "whatsapp",
-      recipient_type: "individual",
-      ...addressingField(to),
-      type: "document",
-      document: { id: upload.data.id, filename, caption }
-    }, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
+    const jid = phoneToJid(to);
+    return await sock.sendMessage(jid, {
+      document: pdfBuffer,
+      mimetype: "application/pdf",
+      fileName: filename,
+      caption: caption || filename
     });
   } catch (error) {
     logError(`[send:doc] to ${to}`, error);
-    return { data: { failed: true } };
+    return { failed: true, error: error.message };
   }
 }
 
 /*--------------------------------------------------------------------------
- WHATSAPP BUTTONS
---------------------------------------------------------------------------*/
-async function sendButtons(to, body, buttons) {
-  log("[send:buttons]", `-> ${to} :: [${buttons.map(b => b.title).join(", ")}]`); // ➕ ADDED
-  const payload = {
-    messaging_product: "whatsapp",
-    recipient_type: "individual",
-    ...addressingField(to),
-    type: "interactive",
-    interactive: {
-      type: "button",
-      body: { text: body },
-      action: {
-        buttons: buttons.slice(0, 3).map(button => ({
-          type: "reply",
-          reply: { id: button.id, title: button.title.substring(0, 20) }
-        }))
-      }
-    }
-  };
-
-  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
-    log("[send:mock]", `Mock buttons dispatch to ${to}`);
-    return { data: { mock: true } };
-  }
-
-  try {
-    return await axios.post(WA_URL, payload, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    });
-  } catch (error) {
-    logError(`[send:buttons] to ${to}`, error);
-    return { data: { failed: true } };
-  }
-}
-
-/*--------------------------------------------------------------------------
- WHATSAPP LIST
---------------------------------------------------------------------------*/
-async function sendInteractiveList(to, body, section, rows, buttonText = "Select") {
-  log("[send:list]", `-> ${to} :: ${section} [${rows.map(r => r.title).join(", ")}]`); // ➕ ADDED
-  const payload = {
-    messaging_product: "whatsapp",
-    recipient_type: "individual",
-    ...addressingField(to),
-    type: "interactive",
-    interactive: {
-      type: "list",
-      body: { text: body },
-      action: {
-        button: buttonText.substring(0, 20),
-        sections: [
-          {
-            title: section.substring(0, 24),
-            rows: rows.slice(0, 10).map(row => ({
-              id: row.id,
-              title: row.title.substring(0, 24),
-              description: row.description ? row.description.substring(0, 72) : undefined
-            }))
-          }
-        ]
-      }
-    }
-  };
-
-  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
-    log("[send:mock]", `Mock list dispatch to ${to}: ${section}`);
-    return { data: { mock: true } };
-  }
-
-  try {
-    return await axios.post(WA_URL, payload, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    });
-  } catch (error) {
-    logError(`[send:list] to ${to}`, error);
-    return { data: { failed: true } };
-  }
-}
-
-/*--------------------------------------------------------------------------
- MENU ROWS
---------------------------------------------------------------------------*/
-function foodRows() {
-  return [
-    { id: "food_jollof", title: "Jollof Rice", description: "₵30 - ₵60" },
-    { id: "food_fried",  title: "Fried Rice",  description: "₵30 - ₵60" }
-  ];
-}
-
-function priceRows() {
-  return RICE_PORTIONS.map(portion => ({
-    id: `price_${portion.amount}`,
-    title: money(portion.amount),
-    description: `Includes ${portion.chicken} chicken`
-  }));
-}
-
-/*--------------------------------------------------------------------------
- CALCULATE TOTAL
+ ORDER HELPERS
 --------------------------------------------------------------------------*/
 function calculateTotal(session) {
   return Number(session.foodAmount) || 0;
 }
 
-/*--------------------------------------------------------------------------
- ORDER ID
---------------------------------------------------------------------------*/
 function generateOrderId() {
   const now = new Date();
   const day = String(now.getDate()).padStart(2, "0");
@@ -452,9 +355,11 @@ function generateOrderId() {
   return `SB-${day}${month}${hour}${minutes}`;
 }
 
-/*--------------------------------------------------------------------------
- ORDER SUMMARY
---------------------------------------------------------------------------*/
+function customerLabel(order) {
+  const phone = `+${order.customerPhone}`;
+  return order.customerName ? `${order.customerName} (${phone})` : phone;
+}
+
 function buildOrderSummary(session) {
   const chickenLine = session.includedChicken ? `🍗 Includes ${session.includedChicken} chicken\n` : "";
   return `🛍️ *${STORE_NAME.toUpperCase()} ORDER*
@@ -466,34 +371,64 @@ ${chickenLine}💵 *TOTAL: ${money(calculateTotal(session))}*
 }
 
 /*--------------------------------------------------------------------------
- FULFILLMENT OPTIONS
+ CONVERSATION SCREENS & PROMPTS
 --------------------------------------------------------------------------*/
-async function showFulfillmentOptions(to) {
-  return sendInteractiveList(to,
-    "🚚 How would you like to receive your food?",
-    "Order Method",
-    [
-      { id: "pickup",   title: "Pick Up",  description: "Come to our Lapaz location" },
-      { id: "delivery", title: "Delivery", description: "Pay the rider on delivery" }
-    ]
-  );
+async function showWelcome(to) {
+  const message = `👋 *WELCOME TO ${STORE_NAME.toUpperCase()}!* 🍛
+
+We are happy to serve you.
+Enjoy delicious rice from our ${BRANCH_NAME} branch!
+
+*SECRET:* You will be served very fast without joining queue.
+
+Please choose what you'd like to eat:
+1️⃣ *Jollof Rice*
+2️⃣ *Fried Rice*
+
+_(Reply with *1* or *2*)_`;
+
+  return sendWhatsAppText(to, message);
 }
 
-/*--------------------------------------------------------------------------
- CUSTOMER CONFIRMATION
---------------------------------------------------------------------------*/
+async function showPriceOptions(to, foodName) {
+  const message = `🍚 *${foodName.toUpperCase()}*
+
+Choose your portion size:
+1️⃣ *₵30.00* (Includes 1 chicken)
+2️⃣ *₵40.00* (Includes 1 chicken)
+3️⃣ *₵50.00* (Includes 2 chicken)
+4️⃣ *₵60.00* (Includes 3 chicken)
+
+_(Reply with *1*, *2*, *3*, or *4*)_`;
+
+  return sendWhatsAppText(to, message);
+}
+
+async function showFulfillmentOptions(to) {
+  const message = `🚚 *How would you like to receive your food?*
+
+1️⃣ *Pick Up* (Come to our ${BRANCH_NAME} branch)
+2️⃣ *Delivery* (Pay the rider on delivery)
+
+_(Reply with *1* for Pick Up, or *2* for Delivery)_`;
+
+  return sendWhatsAppText(to, message);
+}
+
 async function sendOrderConfirmation(to, session) {
   const total = calculateTotal(session);
-  await sendWhatsAppText(to,
-    `🧾 *PLEASE CONFIRM YOUR ORDER*\n${buildOrderSummary(session)}\n━━━━━━━━━━━━━━\n\nIs everything correct?`
-  );
-  return sendButtons(to,
-    `Total: ${money(total)}\n\nWould you like to place this order?`,
-    [
-      { id: "confirm_order", title: "✅ Place Order" },
-      { id: "cancel_order",  title: "❌ Cancel"      }
-    ]
-  );
+  const message = `🧾 *PLEASE CONFIRM YOUR ORDER*
+
+${buildOrderSummary(session)}
+━━━━━━━━━━━━━━
+
+Would you like to place this order?
+1️⃣ *Yes, Place Order*
+2️⃣ *Cancel*
+
+_(Reply with *1* to place order or *2* to cancel)_`;
+
+  return sendWhatsAppText(to, message);
 }
 
 /*--------------------------------------------------------------------------
@@ -501,122 +436,89 @@ async function sendOrderConfirmation(to, session) {
 --------------------------------------------------------------------------*/
 async function sendOrderToBranch(order) {
   if (!BRANCH_NUMBER) {
-    logError("[order:branch]", `No WhatsApp number configured for the ${BRANCH_NAME} branch (set LAPAZ_BRANCH_NUMBER)`); // ➕ CHANGED
+    logError("[order:branch]", `No WhatsApp number configured for ${BRANCH_NAME} branch (set LAPAZ_BRANCH_NUMBER)`);
     return false;
   }
-  log("[order:branch]", `Notifying ${BRANCH_NAME} (+${normalizePhone(BRANCH_NUMBER)}) about order ${order.id}`); // ➕ ADDED
+  log("[order:branch]", `Notifying ${BRANCH_NAME} (+${normalizePhone(BRANCH_NUMBER)}) about order ${order.id}`);
 
   const chickenLine = order.includedChicken ? `🍗 Includes ${order.includedChicken} chicken\n` : "";
 
   const message = `🔔 *NEW ORDER*
 
-🆔 Order: ${order.id}
+🆔 Order: *${order.id}*
 📍 Branch: ${order.branch}
-📱 Customer: ${customerLabel(order)}${isBsuidId(order.customerPhone) ? " — no phone number, reply only via this bot" : ""}
+📱 Customer: ${customerLabel(order)}
 🍽️ Food: ${order.food}
 ${chickenLine}━━━━━━━━━━━━━
-
 💵 *TOTAL: ${money(order.total)}*
 🚚 Method: ${order.fulfillment === "pickup" ? "PICK UP" : "DELIVERY — PAY ON DELIVERY"}${order.fulfillment === "delivery" ? `\n📍 DELIVERY ADDRESS:\n${order.address}` : ""}
 ━━━━━━━━━━━━━━
 
-Please start preparing this order.`;
+*Staff Quick Actions:*
+Reply to this chat with:
+• *prepare ${order.id}* (Mark preparing)
+• *ready ${order.id}* (Mark food ready)
+• *rider ${order.id}* (Mark rider on way)
+• *pickup ${order.id}* (Mark collected)`;
 
   await sendWhatsAppText(normalizePhone(BRANCH_NUMBER), message);
-
-  await sendButtons(normalizePhone(BRANCH_NUMBER),
-    `Order ${order.id}\n\nWhat would you like to do?`,
-    [
-      { id: `staff_prepare_${order.id}`, title: "👨‍🍳 Preparing"   },
-      { id: `staff_ready_${order.id}`,   title: "✅ Food Ready"   },
-      { id: `staff_rider_${order.id}`,   title: "🚴 Rider On Way" }
-    ]
-  );
-
   return true;
 }
 
 /*--------------------------------------------------------------------------
- WELCOME MESSAGE
---------------------------------------------------------------------------*/
-async function showWelcome(to) {
-  const message = `👋 *WELCOME TO ${STORE_NAME.toUpperCase()}!* 🍛
-
-We are happy to serve you.
-Enjoy delicious rice from our Lapaz location.
-
-*SECRET:* You will be served very fast without joining queue
-
-🍚 Jollof Rice
-🍚 Fried Rice
-
-Please choose what you'd like to eat:`;
-
-  await sendWhatsAppText(to, message);
-  return sendInteractiveList(to,
-    "🍽️ What would you like to eat?",
-    "Menu",
-    foodRows()
-  );
-}
-
-/*--------------------------------------------------------------------------
- PLACE ORDER
+ PLACE CUSTOMER ORDER
 --------------------------------------------------------------------------*/
 async function placeCustomerOrder(from, session) {
-  log("[order:new]", `${from} is placing an order`, { food: session.food, amount: session.foodAmount, fulfillment: session.fulfillment }); // ➕ ADDED
+  log("[order:new]", `${from} is placing an order`, { food: session.food, amount: session.foodAmount, fulfillment: session.fulfillment });
   const order = {
-    id:            generateOrderId(),
+    id: generateOrderId(),
     customerPhone: from,
-    customerName:     session.customerName || null,     // ➕ ADDED
-    customerUsername: session.customerUsername || null, // ➕ ADDED
-    branch:        BRANCH_NAME,
-    food:          session.food,
-    basePrice:     calculateTotal(session),
+    customerName: session.customerName || null,
+    branch: BRANCH_NAME,
+    food: session.food,
+    basePrice: calculateTotal(session),
     includedChicken: session.includedChicken || 0,
-    total:         calculateTotal(session),
-    fulfillment:   session.fulfillment,
-    address:       session.address || null,
-    status:        "NEW",
-    createdAt:     new Date().toISOString()
+    total: calculateTotal(session),
+    fulfillment: session.fulfillment,
+    address: session.address || null,
+    status: "NEW",
+    createdAt: new Date().toISOString()
   };
 
-  orders.set(`${order.id}-${Date.now()}-${Math.random()}`, order);
-  log("[order:new]", `Order ${order.id} created in memory`, order); // ➕ ADDED
+  orders.set(order.id, order);
+  log("[order:new]", `Order ${order.id} created in memory`, order);
+
   try {
-    // ➕ CHANGED: store the clean BSUID (no internal "bsuid:" marker) in Supabase —
-    // the marker is only meaningful inside this running process.
-    await saveOrder({ ...order, customerPhone: order.customerPhone.replace(/^bsuid:/, "") });
-    log("[order:new]", `Order ${order.id} saved to Supabase`); // ➕ ADDED
+    await saveOrder(order);
+    log("[order:new]", `Order ${order.id} saved to Supabase`);
   } catch (error) {
-    logError(`[order:new] Supabase save for ${order.id}`, error); // ➕ CHANGED (was console.error)
+    logError(`[order:new] Supabase save for ${order.id}`, error);
   }
 
   const branchSent = await sendOrderToBranch(order);
-  log("[order:new]", `Order ${order.id} sent to branch: ${branchSent}`); // ➕ ADDED
+  log("[order:new]", `Order ${order.id} sent to branch: ${branchSent}`);
+
   if (!branchSent) {
     return sendWhatsAppText(from,
-      `❌ We couldn't send your order to the ${order.branch} location.\n\nPlease try again later or send *hi* to restart.`
+      `❌ We couldn't send your order to the ${order.branch} location.\n\nPlease try again later or reply *hi* to restart.`
     );
   }
 
-  const addressLine = order.fulfillment === "delivery"
-    ? `\n📍 Address: ${order.address}`
-    : "";
+  const addressLine = order.fulfillment === "delivery" ? `\n📍 Address: ${order.address}` : "";
   const chickenLine = order.includedChicken ? `🍗 Includes ${order.includedChicken} chicken\n` : "";
 
   await sendWhatsAppText(from,
     `🎉 *ORDER PLACED SUCCESSFULLY!*
 
-🆔 Order: ${order.id}
+🆔 Order: *${order.id}*
 📍 Location: ${order.branch}
 🍽️ Food: ${order.food}
 ${chickenLine}💵 Total: ${money(order.total)}
 🚚 Method: ${order.fulfillment === "pickup" ? "Pick Up" : "Delivery — Pay on Delivery"}${addressLine}
 ━━━━━━━━━━━━━━
 
-Your order has been sent to the location.
-We will notify you when your food is ready. ❤️`
+Your order has been sent to our kitchen.
+We will notify you as soon as your food is prepared! ❤️`
   );
 
   session.order = order;
@@ -624,101 +526,74 @@ We will notify you when your food is ready. ❤️`
 }
 
 /*--------------------------------------------------------------------------
- STAFF ORDER STATUS
+ NOTIFY CUSTOMER & STAFF ACTIONS
 --------------------------------------------------------------------------*/
-
-// ➕ ADDED: sends a status update to the customer; if it fails, tells the branch
-// immediately instead of the customer silently never finding out. The most common
-// cause is error 131047 — more than 24 hours since the customer's last message,
-// which WhatsApp blocks a free-form (non-template) reply for.
 async function notifyCustomer(order, text, staffPhone) {
   try {
     await sendWhatsAppText(order.customerPhone, text);
   } catch (error) {
-    const code = error?.response?.data?.error?.code;
-    const reason = code === 131047
-      ? "more than 24 hours since their last message — WhatsApp blocks automatic replies outside that window"
-      : (error?.response?.data?.error?.message || error.message || "unknown error");
-    log("[order:notify]", `Could not reach customer for order ${order.id} (${reason})`);
+    logError(`[order:notify] Could not reach customer ${order.customerPhone}`, error);
     if (staffPhone) {
-      // best-effort — if even this fails, don't let it crash the calling flow
       await sendWhatsAppText(staffPhone,
-        `⚠️ *COULD NOT NOTIFY CUSTOMER*\n\n🆔 Order: ${order.id}\n📱 Customer: ${customerLabel(order)}\n\nReason: ${reason}\n\nPlease contact them directly if possible.`
+        `⚠️ *COULD NOT NOTIFY CUSTOMER*\n\n🆔 Order: ${order.id}\n📱 Customer: ${customerLabel(order)}\n\nPlease contact them directly.`
       ).catch(() => {});
     }
   }
 }
 
 async function handleStaffAction(from, action, orderId) {
-  log("[staff]", `${from} pressed "${action}" for order ${orderId}`); // ➕ ADDED
-  const order = Array.from(orders.values()).find(item => item.id === orderId);
+  log("[staff]", `${from} triggered "${action}" for order ${orderId}`);
+  const order = Array.from(orders.values()).find(item => item.id.toLowerCase() === orderId.toLowerCase());
   if (!order) {
-    logError("[staff]", `Order ${orderId} not found for staff action "${action}"`); // ➕ ADDED
+    logError("[staff]", `Order ${orderId} not found for staff action "${action}"`);
     return sendWhatsAppText(from, `❌ Order ${orderId} was not found.`);
   }
 
-  // ➕ ADDED: if the customer cancelled this order, the old staff buttons must not continue it
   if (order.status === "CANCELLED") {
-    log("[staff]", `Order ${order.id} is CANCELLED — ignoring staff action "${action}"`); // ➕ ADDED
-    return sendWhatsAppText(from, `❌ Order ${order.id} was already CANCELLED by the customer. No further action needed.`);
+    log("[staff]", `Order ${order.id} is CANCELLED — ignoring staff action "${action}"`);
+    return sendWhatsAppText(from, `❌ Order ${order.id} was already CANCELLED. No further action needed.`);
   }
 
   if (action === "prepare") {
     order.status = "PREPARING";
-    log("[order:status]", `Order ${order.id} -> PREPARING`); // ➕ ADDED
-    await notifyCustomer(order, // ➕ CHANGED: now alerts the branch if this can't be delivered
-      `👨‍🍳 *YOUR ORDER IS BEING PREPARED*\n\n🆔 ${order.id}\n🍽️ ${order.food}\n📍 ${order.branch}\n\nYour food is now being prepared.\n\nWe'll notify you when it is ready. ❤️`,
+    log("[order:status]", `Order ${order.id} -> PREPARING`);
+    try { await updateOrderStatus(order, "PREPARING"); } catch (e) {}
+
+    await notifyCustomer(order,
+      `👨‍🍳 *YOUR ORDER IS BEING PREPARED*\n\n🆔 Order: ${order.id}\n🍽️ ${order.food}\n📍 ${order.branch}\n\nYour food is now being prepared.\nWe'll notify you when it is ready. ❤️\n\n_(Reply *cancel ${order.id}* if you need to cancel before preparation finishes)_`,
       from
     );
 
-    // ➕ ADDED: after the "preparing" message, ask the customer to choose: continue or cancel
-    try {
-      await sendButtons(order.customerPhone,
-        `🍛 Order ${order.id} is being prepared.\n\nDo you still want this order? Please choose below — once it is prepared, it will be served to you.`,
-        [
-          { id: `customer_continue_${order.id}`, title: "✅ Yes, Continue" },
-          { id: `customer_cancel_${order.id}`,   title: "❌ Cancel Order"  }
-        ]
-      );
-    } catch (error) {
-      logError(`[order:prepare] Continue/Cancel buttons for ${order.id}`, error); // ➕ CHANGED (was console.error)
-    }
-
-    return sendWhatsAppText(from, `👨‍🍳 Order ${order.id} is now marked as *PREPARING*.`);
+    return sendWhatsAppText(from, `👨‍🍳 Order ${order.id} is now marked as *PREPARING*.\n\nWhen ready, reply:\n*ready ${order.id}*`);
   }
 
   if (action === "ready") {
     order.status = "READY";
-    log("[order:status]", `Order ${order.id} -> READY`); // ➕ ADDED
-    if (order.fulfillment === "pickup") {
-      await notifyCustomer(order, // ➕ CHANGED
-        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food is ready for pickup. 🍛\n\nYou can come to the location and collect your order.\n\nThank you for ordering from ${STORE_NAME}! ❤️`,
-        from
-      );
-    } else {
-      await notifyCustomer(order, // ➕ CHANGED
-        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food has been prepared and is ready for delivery.\n\n🚚 Your rider will be on the way shortly.\n\n💵 Please remember: *PAY ON DELIVERY*.`,
-        from
-      );
-    }
+    log("[order:status]", `Order ${order.id} -> READY`);
+    try { await updateOrderStatus(order, "READY"); } catch (e) {}
 
-    if (order.fulfillment === "delivery") {
-      await sendButtons(from, `Order ${order.id} is ready.\n\nChoose the next action:`,
-        [{ id: `staff_rider_${order.id}`, title: "🚴 Rider On Way" }]
+    if (order.fulfillment === "pickup") {
+      await notifyCustomer(order,
+        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food is hot and ready for pickup! 🍛\nPlease come to our counter to collect.\n\nThank you for choosing ${STORE_NAME}! ❤️`,
+        from
       );
+      return sendWhatsAppText(from, `✅ Order ${order.id} marked as *READY*. When picked up, reply:\n*pickup ${order.id}*`);
     } else {
-      await sendButtons(from, `Order ${order.id} is ready for pickup.`,
-        [{ id: `staff_pickup_${order.id}`, title: "📦 Picked Up" }]
+      await notifyCustomer(order,
+        `🎉 *YOUR FOOD IS READY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n🍽️ ${order.food}\n\nYour food is ready and will be handed to the dispatch rider.\n🚚 Remember: *PAY ON DELIVERY*.\n\nThank you for choosing ${STORE_NAME}! ❤️`,
+        from
       );
+      return sendWhatsAppText(from, `✅ Order ${order.id} marked as *READY*. When rider leaves, reply:\n*rider ${order.id}*`);
     }
-    return;
   }
 
   if (action === "rider") {
     order.status = "OUT_FOR_DELIVERY";
-    log("[order:status]", `Order ${order.id} -> OUT_FOR_DELIVERY`); // ➕ ADDED
-    await notifyCustomer(order, // ➕ CHANGED
-      `🚴 *YOUR RIDER IS ON THE WAY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n\nYour food is on the way.\n\n💵 Payment: *PAY ON DELIVERY*\n\nPlease keep your phone available.\n\nThank you for ordering from ${STORE_NAME}! ❤️`,
+    log("[order:status]", `Order ${order.id} -> OUT_FOR_DELIVERY`);
+    try { await updateOrderStatus(order, "OUT_FOR_DELIVERY"); } catch (e) {}
+
+    await notifyCustomer(order,
+      `🚴 *YOUR RIDER IS ON THE WAY!*\n\n🆔 Order: ${order.id}\n📍 Location: ${order.branch}\n\nYour food is on the way to your delivery address!\n💵 Payment: *PAY ON DELIVERY*\n\nPlease keep your phone reachable. ❤️`,
       from
     );
     return sendWhatsAppText(from, `🚴 Order ${order.id} marked as *OUT FOR DELIVERY*.`);
@@ -726,92 +601,67 @@ async function handleStaffAction(from, action, orderId) {
 
   if (action === "pickup") {
     order.status = "PICKED_UP";
-    log("[order:status]", `Order ${order.id} -> PICKED_UP`); // ➕ ADDED
-    await notifyCustomer(order, // ➕ CHANGED
-      `✅ *ORDER PICKED UP*\n\n🆔 ${order.id}\n\nThank you for ordering from ${STORE_NAME}! ❤️\n\nEnjoy your food! 🍛`,
+    log("[order:status]", `Order ${order.id} -> PICKED_UP`);
+    try { await updateOrderStatus(order, "PICKED_UP"); } catch (e) {}
+
+    await notifyCustomer(order,
+      `✅ *ORDER PICKED UP*\n\n🆔 Order: ${order.id}\n\nThank you for ordering from ${STORE_NAME}! ❤️\nEnjoy your meal! 🍛`,
       from
     );
     return sendWhatsAppText(from, `📦 Order ${order.id} marked as *PICKED UP*.`);
   }
 
-  logError("[staff]", `Unknown staff action "${action}" for order ${orderId}`); // ➕ ADDED
   return sendWhatsAppText(from, "Unknown staff action.");
 }
 
-/*--------------------------------------------------------------------------
- ➕ ADDED: CUSTOMER ANSWER AFTER "PREPARING" (continue / cancel)
---------------------------------------------------------------------------*/
-async function handleCustomerOrderResponse(from, action, orderId) {
-  log("[customer]", `${from} pressed "${action}" for order ${orderId}`); // ➕ ADDED
-  // Only the customer who placed the order can answer for it
+async function handleCustomerCancellation(from, orderId) {
+  log("[customer]", `${from} wants to cancel order ${orderId}`);
   const order = Array.from(orders.values()).find(
-    item => item.id === orderId && item.customerPhone === from
+    item => item.id.toLowerCase() === orderId.toLowerCase() && item.customerPhone === from
   );
+
   if (!order) {
-    logError("[customer]", `Order ${orderId} not found for ${from} (or belongs to a different customer)`); // ➕ ADDED
-    return sendWhatsAppText(from, `❌ Order ${orderId} was not found.`);
+    return sendWhatsAppText(from, `❌ Order ${orderId} not found under your number.`);
   }
 
   if (order.status === "CANCELLED") {
-    log("[customer]", `Order ${order.id} already CANCELLED — ignoring "${action}"`); // ➕ ADDED
-    return sendWhatsAppText(from, `Order ${order.id} has already been cancelled.`);
+    return sendWhatsAppText(from, `Order ${order.id} is already cancelled.`);
   }
 
-  /*-- CUSTOMER STILL WANTS THE ORDER --*/
-  if (action === "continue") {
-    order.customerConfirmed = true;
-    log("[customer]", `Order ${order.id} confirmed by customer`); // ➕ ADDED
+  if (order.status !== "NEW" && order.status !== "PREPARING") {
     return sendWhatsAppText(from,
-      `✅ *THANK YOU!*\n\n🆔 Order: ${order.id}\n\nYour order is confirmed. We will notify you when it is ready. ❤️`
+      `⚠️ Order ${order.id} cannot be cancelled through the bot because it is already *${order.status.replace(/_/g, " ")}*.\n\nPlease call our ${BRANCH_NAME} branch directly.`
     );
   }
 
-  /*-- CUSTOMER CANCELS --*/
-  if (action === "cancel") {
-    // Too late to cancel once the food is ready / on the way / collected
-    if (order.status !== "NEW" && order.status !== "PREPARING") {
-      log("[customer]", `Cancel refused for ${order.id} — status is already ${order.status}`); // ➕ ADDED
-      return sendWhatsAppText(from,
-        `⚠️ Order ${order.id} can no longer be cancelled here because it is already *${order.status.replace(/_/g, " ")}*.\n\nPlease contact ${BRANCH_NAME} directly.`
-      );
-    }
+  order.status = "CANCELLED";
+  order.cancelledBy = "customer";
+  order.cancelledAt = new Date().toISOString();
+  log("[order:status]", `Order ${order.id} -> CANCELLED by customer`);
 
-    order.status = "CANCELLED";
-    order.cancelledBy = "customer";
-    order.cancelledAt = new Date().toISOString();
-    log("[order:status]", `Order ${order.id} -> CANCELLED (by customer ${from})`); // ➕ ADDED
+  try {
+    await updateOrderStatus(order, "CANCELLED");
+  } catch (err) {
+    logError(`[order:status] Supabase cancel for ${order.id}`, err);
+  }
 
-    // ➕ ADDED: save the cancellation so reports still show it after a restart
-    try {
-      await updateOrderStatus(order, "CANCELLED");
-      log("[order:status]", `Order ${order.id} cancellation saved to Supabase`); // ➕ ADDED
-    } catch (error) {
-      logError(`[order:status] Supabase status update for ${order.id}`, error); // ➕ CHANGED (was console.error)
-    }
-
-    // Notify the branch first — this is the important part
-    try {
-      if (!BRANCH_NUMBER) throw new Error("No WhatsApp number configured for the Lapaz branch");
-      await sendWhatsAppText(normalizePhone(BRANCH_NUMBER),
-        `❌ *ORDER CANCELLED BY CUSTOMER*
+  if (BRANCH_NUMBER) {
+    await sendWhatsAppText(normalizePhone(BRANCH_NUMBER),
+      `❌ *ORDER CANCELLED BY CUSTOMER*
 
 🆔 Order: ${order.id}
 📱 Customer: ${customerLabel(order)}
 🍽️ Food: ${order.food}
 💵 Total: ${money(order.total)}
-🚚 Method: ${order.fulfillment === "pickup" ? "PICK UP" : "DELIVERY — PAY ON DELIVERY"}
 ━━━━━━━━━━━━━━
 
 Please STOP preparing this order.`
-      );
-    } catch (error) {
-      logError(`[order:status] Branch cancel notification for ${order.id}`, error); // ➕ CHANGED (was console.error)
-    }
-
-    return sendWhatsAppText(from,
-      `❌ *ORDER CANCELLED*\n\n🆔 ${order.id}\n\nYour order has been cancelled and ${BRANCH_NAME} has been notified.\n\nSend *hi* whenever you want to order again.`
-    );
+    ).catch(() => {});
   }
+
+  return sendWhatsAppText(from,
+    `❌ *ORDER CANCELLED*\n\n🆔 ${order.id}\n\nYour order has been cancelled and the kitchen was notified.\n\nReply *hi* whenever you want to order again.`
+  );
 }
 
 /*--------------------------------------------------------------------------
@@ -820,328 +670,196 @@ Please STOP preparing this order.`
 async function showReportOptions(to) {
   const session = getSession(to);
   session.step = "REPORT_PERIOD";
-  return sendButtons(to,
-    `📊 *${BRANCH_NAME} REPORT*\n\nWhich report would you like?`,
-    [
-      { id: "report_daily", title: "Daily" },
-      { id: "report_weekly", title: "Weekly" },
-      { id: "report_monthly", title: "Monthly" }
-    ]
-  );
+  const message = `📊 *${BRANCH_NAME.toUpperCase()} SALES REPORT*
+
+Which period would you like?
+1️⃣ *Daily*
+2️⃣ *Weekly*
+3️⃣ *Monthly*
+
+_(Reply with *1*, *2*, or *3*, or type "daily", "weekly", "monthly")_`;
+  return sendWhatsAppText(to, message);
 }
 
 async function sendBranchReport(to, period) {
-  log("[report]", `Generating ${period} report for ${BRANCH_NAME}, requested by ${to}`); // ➕ ADDED
+  log("[report]", `Generating ${period} report for ${BRANCH_NAME}, requested by ${to}`);
   try {
     const reportOrders = await getOrders(BRANCH_NAME, period, orders);
-    log("[report]", `${reportOrders.length} order(s) found for ${period}`); // ➕ ADDED
+    log("[report]", `${reportOrders.length} order(s) found for ${period}`);
     const pdf = await createReportPdf(BRANCH_NAME, period, reportOrders);
     const filename = `sweet-bite-${BRANCH_NAME.toLowerCase()}-${period}.pdf`;
 
-    // ➕ ADDED: mention cancelled orders in the chat message
-    const cancelledCount = reportOrders.filter(order => String(order.status || "").toUpperCase() === "CANCELLED").length;
+    const cancelledCount = reportOrders.filter(o => String(o.status || "").toUpperCase() === "CANCELLED").length;
     await sendWhatsAppText(to,
-      `📊 ${period[0].toUpperCase() + period.slice(1)} report for ${BRANCH_NAME}: ${reportOrders.length} order(s)${cancelledCount ? ` (${cancelledCount} cancelled)` : ""}.`
+      `📊 *${period.toUpperCase()} REPORT* for ${BRANCH_NAME}:\n• Total Orders: ${reportOrders.length}${cancelledCount ? ` (${cancelledCount} cancelled)` : ""}\n\nGenerating PDF report below...`
     );
     return sendWhatsAppDocument(to, pdf, filename, `${BRANCH_NAME} ${period} order report`);
   } catch (error) {
-    logError(`[report] ${BRANCH_NAME} ${period} for ${to}`, error); // ➕ CHANGED (was console.error)
-    return sendWhatsAppText(to,
-      "❌ I could not generate the report right now. Please try again in a moment."
-    );
+    logError(`[report] ${BRANCH_NAME} ${period} for ${to}`, error);
+    return sendWhatsAppText(to, "❌ Could not generate the report. Please try again in a moment.");
   }
 }
 
 /*--------------------------------------------------------------------------
- HANDLE TEXT
+ INCOMING MESSAGE PARSER & STATE MACHINE
 --------------------------------------------------------------------------*/
-async function handleText(from, text) {
-  const input = String(text || "").trim();
+async function handleIncomingText(from, rawText, customerName) {
+  const input = String(rawText || "").trim();
   const lower = input.toLowerCase();
   const isStaff = isBranchPhone(from);
-  log("[text]", `${from}${isStaff ? " (STAFF)" : ""} :: "${input}"`); // ➕ ADDED
 
-  if (isStaff && lower === "report") {
-    log("[text]", `${from} requested the report menu`); // ➕ ADDED
-    return showReportOptions(from);
-  }
+  log("[text]", `${from}${isStaff ? " (STAFF)" : ""}${customerName ? ` (${customerName})` : ""} :: "${input}"`);
 
   const session = getSession(from);
-  if (isStaff && session.step === "REPORT_PERIOD" && ["daily", "weekly", "monthly"].includes(lower)) {
-    session.step = "WELCOME";
-    log("[text]", `${from} chose "${lower}" report`); // ➕ ADDED
-    return sendBranchReport(from, lower);
+  if (customerName) session.customerName = customerName;
+
+  // 1. Staff Commands
+  if (isStaff) {
+    if (lower === "report") {
+      return showReportOptions(from);
+    }
+
+    if (session.step === "REPORT_PERIOD") {
+      let chosenPeriod = null;
+      if (input === "1" || lower.includes("day") || lower.includes("daily")) chosenPeriod = "daily";
+      else if (input === "2" || lower.includes("week")) chosenPeriod = "weekly";
+      else if (input === "3" || lower.includes("month")) chosenPeriod = "monthly";
+
+      if (chosenPeriod) {
+        session.step = "WELCOME";
+        return sendBranchReport(from, chosenPeriod);
+      }
+    }
+
+    const staffMatch = input.match(/^(prepare|ready|rider|pickup)\s+([a-zA-Z0-9\-]+)$/i);
+    if (staffMatch) {
+      const action = staffMatch[1].toLowerCase();
+      const orderId = staffMatch[2];
+      return handleStaffAction(from, action, orderId);
+    }
   }
 
-  if (["hi","hello","hey","start","menu"].includes(lower)) {
-    log("[text]", `${from} restarted the session`); // ➕ ADDED
+  // 2. Global Resets & Greetings
+  if (["hi", "hello", "hey", "start", "menu"].includes(lower)) {
     resetSession(from);
     return showWelcome(from);
   }
 
-  if (lower === "restart" || lower === "cancel") {
-    log("[text]", `${from} typed "${lower}" — session reset`); // ➕ ADDED
+  if (["cancel", "restart"].includes(lower)) {
     resetSession(from);
+    return sendWhatsAppText(from, "🔄 Current ordering process reset.\n\nReply *hi* to start a new order.");
+  }
+
+  // 3. Customer cancel of existing placed order
+  const cancelMatch = input.match(/^cancel\s+([a-zA-Z0-9\-]+)$/i);
+  if (cancelMatch) {
+    return handleCustomerCancellation(from, cancelMatch[1]);
+  }
+
+  // 4. Ordering State Machine
+  // Step: WELCOME / FOOD SELECTION
+  if (session.step === "WELCOME") {
+    if (input === "1" || lower.includes("jollof")) {
+      session.food = "Jollof Rice";
+      session.step = "PRICE";
+      return showPriceOptions(from, session.food);
+    }
+    if (input === "2" || lower.includes("fried")) {
+      session.food = "Fried Rice";
+      session.step = "PRICE";
+      return showPriceOptions(from, session.food);
+    }
     return sendWhatsAppText(from,
-      "🔄 Your current order has been cancelled.\n\nSend *hi* to start a new order."
+      `Please choose what you would like to eat:\n1️⃣ *Jollof Rice*\n2️⃣ *Fried Rice*\n\n_(Reply with *1* or *2*)_`
     );
   }
 
+  // Step: PRICE SELECTION
+  if (session.step === "PRICE") {
+    let selectedPortion = null;
+    if (input === "1" || input === "30") selectedPortion = RICE_PORTIONS.find(p => p.amount === 30);
+    else if (input === "2" || input === "40") selectedPortion = RICE_PORTIONS.find(p => p.amount === 40);
+    else if (input === "3" || input === "50") selectedPortion = RICE_PORTIONS.find(p => p.amount === 50);
+    else if (input === "4" || input === "60") selectedPortion = RICE_PORTIONS.find(p => p.amount === 60);
+
+    if (selectedPortion) {
+      session.foodAmount = selectedPortion.amount;
+      session.includedChicken = selectedPortion.chicken;
+      session.step = "FULFILLMENT";
+      return showFulfillmentOptions(from);
+    }
+
+    return sendWhatsAppText(from,
+      `Please choose a valid price option:\n1️⃣ ₵30 (1 chicken)\n2️⃣ ₵40 (1 chicken)\n3️⃣ ₵50 (2 chicken)\n4️⃣ ₵60 (3 chicken)\n\n_(Reply with 1, 2, 3, or 4)_`
+    );
+  }
+
+  // Step: FULFILLMENT SELECTION (Pickup vs Delivery)
+  if (session.step === "FULFILLMENT") {
+    if (input === "1" || lower.includes("pick")) {
+      session.fulfillment = "pickup";
+      session.address = null;
+      session.step = "CONFIRMATION";
+      return sendOrderConfirmation(from, session);
+    }
+    if (input === "2" || lower.includes("deliv")) {
+      session.fulfillment = "delivery";
+      session.step = "ADDRESS";
+      return sendWhatsAppText(from,
+        `🚚 *DELIVERY SELECTED*\n\n💵 Payment is *ON DELIVERY*.\n\nPlease reply with your full delivery address:\n(e.g., Area, House number / Landmark)`
+      );
+    }
+    return sendWhatsAppText(from,
+      `Please choose how to receive your food:\n1️⃣ *Pick Up*\n2️⃣ *Delivery*\n\n_(Reply with *1* or *2*)_`
+    );
+  }
+
+  // Step: ADDRESS INPUT
   if (session.step === "ADDRESS") {
     session.address = input;
     session.step = "CONFIRMATION";
-    log("[text]", `${from} provided delivery address: "${input}"`); // ➕ ADDED
     return sendOrderConfirmation(from, session);
   }
 
-  log("[text]", `${from} sent free text at step "${session.step}" — nothing matched, showing fallback`); // ➕ ADDED
+  // Step: ORDER CONFIRMATION
+  if (session.step === "CONFIRMATION") {
+    if (input === "1" || lower.includes("yes") || lower.includes("confirm") || lower.includes("place")) {
+      return placeCustomerOrder(from, session);
+    }
+    if (input === "2" || lower.includes("no") || lower.includes("cancel")) {
+      resetSession(from);
+      return sendWhatsAppText(from, "❌ Order cancelled.\n\nReply *hi* whenever you want to order again.");
+    }
+    return sendWhatsAppText(from,
+      `Would you like to place this order?\n1️⃣ *Yes, Place Order*\n2️⃣ *Cancel*\n\n_(Reply with *1* or *2*)_`
+    );
+  }
+
+  // Fallback
   return sendWhatsAppText(from,
-    "Please use the selection options above.\n\nSend *hi* if you want to start again."
+    `👋 Hello! Send *hi* to see our menu and place an order.`
   );
 }
-
-/*--------------------------------------------------------------------------
- HANDLE CUSTOMER INTERACTIVE
---------------------------------------------------------------------------*/
-async function handleCustomerInteractive(from, message) {
-  const reply = message.interactive;
-  const id = reply?.list_reply?.id || reply?.button_reply?.id;
-  if (!id) {
-    log("[interactive]", `${from} sent an interactive reply with no id — ignored`); // ➕ ADDED
-    return;
-  }
-  log("[interactive]", `${from} selected "${id}" (step was "${getSession(from).step}")`); // ➕ ADDED
-
-  const session = getSession(from);
-
-  /*-- REPORT PERIOD (staff, via buttons) --*/
-  if (id.startsWith("report_")) {
-    const period = id.replace("report_", "");
-    const isStaff = isBranchPhone(from);
-    if (isStaff && session.step === "REPORT_PERIOD" && ["daily", "weekly", "monthly"].includes(period)) {
-      session.step = "WELCOME";
-      return sendBranchReport(from, period);
-    }
-    return;
-  }
-
-  /*-- FOOD MENU (Jollof Rice / Fried Rice) --*/
-  if (id.startsWith("food_")) {
-    const food = FOODS[id];
-    if (!food) {
-      logError("[interactive]", `Unknown food id "${id}" from ${from}`); // ➕ ADDED
-      return;
-    }
-    log("[interactive]", `${from} chose ${food}`); // ➕ ADDED
-
-    session.food = food;
-    session.foodAmount = null;
-    session.step = "PRICE";
-    return sendInteractiveList(from,
-      `🍚 *${food}*\n\nChoose your price:`,
-      "Prices",
-      priceRows()
-    );
-  }
-
-  /*-- PRICE SELECTION --*/
-  if (id.startsWith("price_")) {
-    const amount = Number(id.replace("price_", ""));
-    const portion = RICE_PORTIONS.find(item => item.amount === amount);
-    if (!portion) {
-      logError("[interactive]", `Unknown price id "${id}" from ${from}`); // ➕ ADDED
-      return;
-    }
-    log("[interactive]", `${from} chose ${money(amount)} (${portion.chicken} chicken) for ${session.food}`); // ➕ ADDED
-
-    session.foodAmount = portion.amount;
-    session.includedChicken = portion.chicken;
-    session.step = "FULFILLMENT";
-    return showFulfillmentOptions(from);
-  }
-
-  /*-- PICKUP --*/
-  if (id === "pickup") {
-    log("[interactive]", `${from} chose Pick Up`); // ➕ ADDED
-    session.fulfillment = "pickup";
-    session.step = "CONFIRMATION";
-    return sendOrderConfirmation(from, session);
-  }
-
-  /*-- DELIVERY --*/
-  if (id === "delivery") {
-    log("[interactive]", `${from} chose Delivery — awaiting address`); // ➕ ADDED
-    session.fulfillment = "delivery";
-    session.step = "ADDRESS";
-    return sendWhatsAppText(from,
-      `🚚 *DELIVERY SELECTED*\n\n💵 Payment is *ON DELIVERY*.\n\nPlease send your full delivery address.\n\nFor example:\n\nArea:\nHouse number/name:\nNearest landmark:\n\nPlease send all the details in one message.`
-    );
-  }
-
-  /*-- CONFIRM ORDER --*/
-  if (id === "confirm_order") {
-    log("[interactive]", `${from} confirmed the order at checkout`); // ➕ ADDED
-    return placeCustomerOrder(from, session);
-  }
-
-  /*-- CANCEL ORDER --*/
-  if (id === "cancel_order") {
-    log("[interactive]", `${from} cancelled at checkout (before placing the order)`); // ➕ ADDED
-    resetSession(from);
-    return sendWhatsAppText(from, "❌ Order cancelled.\n\nSend *hi* whenever you want to order again.");
-  }
-}
-
-/*--------------------------------------------------------------------------
- HANDLE INTERACTIVE (detects staff vs customer)
---------------------------------------------------------------------------*/
-async function handleInteractive(from, message) {
-  const reply = message.interactive;
-  const id = reply?.list_reply?.id || reply?.button_reply?.id;
-  if (!id) {
-    log("[interactive]", `${from} sent an interactive message with no usable id (type: ${reply?.type})`); // ➕ ADDED
-    return;
-  }
-
-  if (id.startsWith("staff_prepare_")) return handleStaffAction(from, "prepare", id.replace("staff_prepare_", ""));
-  if (id.startsWith("staff_ready_"))   return handleStaffAction(from, "ready",   id.replace("staff_ready_", ""));
-  if (id.startsWith("staff_rider_"))   return handleStaffAction(from, "rider",   id.replace("staff_rider_", ""));
-  if (id.startsWith("staff_pickup_"))  return handleStaffAction(from, "pickup",  id.replace("staff_pickup_", ""));
-
-  // ➕ ADDED: customer's answer after the "preparing" message
-  if (id.startsWith("customer_continue_")) return handleCustomerOrderResponse(from, "continue", id.replace("customer_continue_", ""));
-  if (id.startsWith("customer_cancel_"))   return handleCustomerOrderResponse(from, "cancel",   id.replace("customer_cancel_", ""));
-
-  return handleCustomerInteractive(from, message);
-}
-
-/*--------------------------------------------------------------------------
- WEBHOOK VERIFICATION
---------------------------------------------------------------------------*/
-app.get("/webhook", (req, res) => {
-  const mode      = req.query["hub.mode"];
-  const token     = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-  if (mode === "subscribe" && token === WHATSAPP_VERIFY_TOKEN) {
-    log("[webhook]", "Verification succeeded"); // ➕ ADDED
-    return res.status(200).send(challenge);
-  }
-  logError("[webhook]", `Verification failed (mode="${mode}", token mismatch)`); // ➕ ADDED
-  return res.sendStatus(403);
-});
-
-/*--------------------------------------------------------------------------
- WHATSAPP WEBHOOK
---------------------------------------------------------------------------*/
-app.post("/webhook", async (req, res) => {
-  res.sendStatus(200);
-  try {
-    const value    = req.body?.entry?.[0]?.changes?.[0]?.value;
-    const messages = value?.messages || [];
-    const statuses = value?.statuses || [];
-
-    // ➕ ADDED: the 24-hour reply window is tracked per (customer, specific phone number) —
-    // not "the business" in general. If this webhook's phone_number_id (the number that
-    // actually RECEIVED the customer's message) doesn't match WHATSAPP_PHONE_NUMBER_ID (the
-    // number your bot SENDS from), every reply looks like a fresh re-engagement attempt to
-    // Meta even seconds after the customer messaged — because they messaged a different
-    // number than the one you're replying from. This is the single most common cause of
-    // error 131047 showing up for a genuinely brand-new order.
-    const receivingPhoneNumberId = value?.metadata?.phone_number_id;
-    if (receivingPhoneNumberId && receivingPhoneNumberId !== WHATSAPP_PHONE_NUMBER_ID) {
-      logError(
-        "[webhook] PHONE NUMBER MISMATCH",
-        `This message was received on phone_number_id ${receivingPhoneNumberId}, but WHATSAPP_PHONE_NUMBER_ID is set to ${WHATSAPP_PHONE_NUMBER_ID}. ` +
-        `Replies are being sent from the WRONG number, which is exactly what triggers error 131047 even on a fresh order. Fix: set WHATSAPP_PHONE_NUMBER_ID to ${receivingPhoneNumberId} in your environment variables and redeploy.`
-      );
-    }
-
-    // ➕ CHANGED: WhatsApp sends a separate "status" webhook every time a message you sent
-    // changes state (sent -> delivered -> read) — one bot reply can trigger several of these
-    // in quick succession. That's normal traffic, not an error, so routine ones are now
-    // completely silent. A FAILED delivery (customer blocked you, invalid number, etc.) is
-    // still logged clearly, since that's the one case you actually need to know about.
-    if (statuses.length) {
-      for (const status of statuses) {
-        if (status.status === "failed") {
-          const reason = (status.errors || []).map(e => `${e.code}: ${e.title}`).join("; ") || "no error detail provided";
-          const recipientId = isBsuidValue(status.recipient_id) ? (BSUID_PREFIX + status.recipient_id) : normalizePhone(status.recipient_id);
-          logError(`[status] Delivery FAILED to ${displayCustomerId(recipientId)} (message ${status.id})`, reason);
-        }
-        // "sent" / "delivered" / "read" -> intentionally not logged (routine, high-volume noise)
-      }
-      return;
-    }
-
-    if (!messages.length) {
-      // ➕ CHANGED: genuinely unexpected shape (not messages, not statuses) — still worth
-      // seeing in full, since this is rare and likely means something changed on Meta's side.
-      log("[webhook]", `Unexpected payload: no "messages" or "statuses" found. object=${req.body?.object}, raw value keys=[${Object.keys(value || {}).join(", ")}]`);
-      return;
-    }
-
-    log("[webhook]", `Received ${messages.length} message(s)`); // ➕ ADDED
-
-    for (const message of messages) {
-      // ➕ ADDED: ignore a message we've already handled (WhatsApp retry / duplicate delivery).
-      // Checked before id resolution so a retried BSUID-only message is also caught.
-      if (alreadyProcessed(message.id)) {
-        log("[webhook]", `Duplicate delivery of message ${message.id} — already handled, ignoring`);
-        continue;
-      }
-
-      // ➕ CHANGED: resolve either a phone number ("from") or, when Meta withholds the phone
-      // number (brand-new customer, or one using a WhatsApp username), a Business-Scoped User
-      // ID ("from_user_id"). Only skip if NEITHER is present/valid.
-      const from = customerIdFromMessage(message);
-      if (!from) {
-        logError("[webhook]", `Skipping message with no usable sender id (no "from" or valid "from_user_id"). Raw: ${JSON.stringify(message).slice(0, 300)}`);
-        continue;
-      }
-
-      log("[webhook]", `${displayCustomerId(from)} :: type = ${message.type}${message.id ? ` (id: ${message.id})` : ""}`); // ➕ CHANGED
-
-      // ➕ ADDED: Meta sends the customer's WhatsApp display name (and, if they've set one,
-      // their @username) alongside every message, in value.contacts[] — separate from the
-      // BSUID. Remembering it lets the branch see a real name instead of just "GH.xxxxxx".
-      const contactEntry = (value?.contacts || []).find(
-        c => c.wa_id === message.from || c.wa_id === message.from_user_id
-      ) || value?.contacts?.[0];
-      const customerName = contactEntry?.profile?.name || null;
-      const customerUsername = message.username || contactEntry?.profile?.username || contactEntry?.username || null;
-      if (customerName || customerUsername) {
-        const session = getSession(from);
-        if (customerName) session.customerName = customerName;
-        if (customerUsername) session.customerUsername = customerUsername;
-      }
-
-      if (message.type === "text") {
-        await handleText(from, message.text?.body);
-        continue;
-      }
-      if (message.type === "interactive") {
-        await handleInteractive(from, message);
-        continue;
-      }
-      log("[webhook]", `${displayCustomerId(from)} sent unsupported message type "${message.type}" — sending fallback`); // ➕ CHANGED
-      await sendWhatsAppText(from, "Please use the options provided.");
-    }
-  } catch (error) {
-    logError("[webhook]", error); // ➕ CHANGED (was console.error)
-  }
-});
 
 /*--------------------------------------------------------------------------
  DASHBOARD & API ROUTES
 --------------------------------------------------------------------------*/
 app.get("/", (req, res) => {
   if (req.query.format === "json" || (req.headers.accept && req.headers.accept.includes("application/json") && !req.headers.accept.includes("text/html"))) {
-    return res.json({ ok: true, store: STORE_NAME, service: "Sweet Bite Food Ordering Bot", branch: BRANCH_NAME });
+    return res.json({ ok: true, store: STORE_NAME, service: "Sweet Bite Food Ordering Bot (Baileys)", branch: BRANCH_NAME });
   }
   return res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-app.get("/health", (req, res) => res.json({ ok: true, uptime: process.uptime(), sessions: sessions.size, orders: orders.size, branch: BRANCH_NAME }));
+app.get("/health", (req, res) => res.json({
+  ok: true,
+  uptime: process.uptime(),
+  sessions: sessions.size,
+  orders: orders.size,
+  branch: BRANCH_NAME,
+  whatsappConnected: isBaileysConnected
+}));
+
 app.get("/orders", (req, res) => res.json(Array.from(orders.values())));
 
 // Activity stream for live dashboard
@@ -1159,7 +877,7 @@ app.get("/api/activities", (req, res) => {
   });
 });
 
-// Overview stats
+// Overview stats & WhatsApp connection status
 app.get("/api/stats", (req, res) => {
   const allOrders = Array.from(orders.values());
   const activeOrders = allOrders.filter(o => String(o.status || "").toUpperCase() !== "CANCELLED");
@@ -1177,7 +895,21 @@ app.get("/api/stats", (req, res) => {
     totalRevenue,
     activitiesCount: activities.length,
     supabaseConfigured: !!process.env.SUPABASE_URL,
-    whatsappConfigured: !!process.env.WHATSAPP_PHONE_NUMBER_ID
+    whatsappConfigured: true,
+    whatsappConnected: isBaileysConnected,
+    whatsappUser: connectedUser,
+    hasQrCode: !!currentQr,
+    qrCodeDataUrl: currentQrDataUrl
+  });
+});
+
+// Endpoint to retrieve active QR code image/data
+app.get("/api/baileys/qr", (req, res) => {
+  res.json({
+    connected: isBaileysConnected,
+    user: connectedUser,
+    hasQr: !!currentQr,
+    qrDataUrl: currentQrDataUrl
   });
 });
 
@@ -1185,7 +917,7 @@ app.get("/api/stats", (req, res) => {
 app.post("/api/orders/:id/status", async (req, res) => {
   const { id } = req.params;
   const { status, action } = req.body;
-  const order = Array.from(orders.values()).find(item => item.id === id);
+  const order = Array.from(orders.values()).find(item => item.id.toLowerCase() === id.toLowerCase());
   if (!order) return res.status(404).json({ error: `Order ${id} not found` });
 
   if (status === "CANCELLED" || action === "cancel") {
@@ -1212,7 +944,7 @@ app.post("/api/orders/:id/status", async (req, res) => {
   if (validAction) {
     try {
       await handleStaffAction("dashboard_staff", validAction, id);
-      const updated = Array.from(orders.values()).find(item => item.id === id);
+      const updated = Array.from(orders.values()).find(item => item.id.toLowerCase() === id.toLowerCase());
       return res.json({ ok: true, order: updated });
     } catch (err) {
       logError("[staff:action]", err);
@@ -1225,13 +957,23 @@ app.post("/api/orders/:id/status", async (req, res) => {
 
 // Simulator endpoint: allow sending simulated WhatsApp interactions & orders
 app.post("/api/simulate", async (req, res) => {
-  const { action, phone = "233241882200", text = "hi", customerName = "Kofi Mensah", food = "Jollof Rice", amount = 40, chicken = 1, fulfillment = "delivery", address = "Lapaz Station Road, Flat 3B" } = req.body;
+  const {
+    action,
+    phone = "233241882200",
+    text = "hi",
+    customerName = "Kofi Mensah",
+    food = "Jollof Rice",
+    amount = 40,
+    chicken = 1,
+    fulfillment = "delivery",
+    address = "Lapaz Station Road, Flat 3B"
+  } = req.body;
 
   try {
     if (action === "text") {
-      log("[webhook:simulate]", `Simulated message from ${customerName} (+${phone}): "${text}"`);
-      await handleText(phone, text);
-      return res.json({ ok: true, message: `Processed simulated text "${text}"` });
+      log("[simulate:text]", `Simulated message from ${customerName} (+${phone}): "${text}"`);
+      await handleIncomingText(phone, text, customerName);
+      return res.json({ ok: true, message: `Processed simulated message: "${text}"` });
     }
 
     if (action === "order") {
@@ -1242,10 +984,9 @@ app.post("/api/simulate", async (req, res) => {
         includedChicken: chicken,
         fulfillment,
         address: fulfillment === "delivery" ? address : null,
-        customerName,
-        customerUsername: customerName.toLowerCase().replace(/\s+/g, "")
+        customerName
       };
-      log("[order:simulate]", `Simulated customer order: ${food} (${money(amount)}) for ${customerName}`);
+      log("[simulate:order]", `Simulated order: ${food} (${money(amount)}) for ${customerName}`);
       await placeCustomerOrder(phone, simSession);
       return res.json({ ok: true, message: "Simulated order placed successfully!", order: simSession.order });
     }
@@ -1273,21 +1014,21 @@ app.get("/api/reports/download", async (req, res) => {
 });
 
 /*--------------------------------------------------------------------------
- START
+ START SERVER & INITIALIZE BAILEYS
 --------------------------------------------------------------------------*/
 app.listen(PORT, "0.0.0.0", () => {
   log("[boot]", `🍛 ${STORE_NAME} food bot running on port ${PORT}`);
+  log("[boot]", `Engine: Baileys Multi-Device (0 Meta API fees)`);
   log("[boot]", `Branch: ${BRANCH_NAME} (+${normalizePhone(BRANCH_NUMBER) || "NOT SET"})`);
   log("[boot]", `Supabase: ${process.env.SUPABASE_URL ? "configured" : "not configured (in-memory only)"}`);
-  log("[boot]", `Dashboard: live at http://0.0.0.0:${PORT}/`);
+  log("[boot]", `Dashboard: live at http://localhost:${PORT}/`);
 
-  // Seed sample initial order so the dashboard is immediately populated and illustrative
+  // Seed sample initial order for dashboard
   if (orders.size === 0) {
     const seedOrder = {
       id: "SB-01101830",
       customerPhone: "233244112233",
       customerName: "Akosua Addo",
-      customerUsername: "akosua_a",
       branch: BRANCH_NAME,
       food: "Jollof Rice",
       basePrice: 50,
@@ -1299,6 +1040,8 @@ app.listen(PORT, "0.0.0.0", () => {
       createdAt: new Date(Date.now() - 15 * 60 * 1000).toISOString()
     };
     orders.set(seedOrder.id, seedOrder);
-    log("[order:new]", `Seed demo order ${seedOrder.id} initialized for dashboard display`);
   }
+
+  // Start WhatsApp Baileys client
+  startBaileys();
 });

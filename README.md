@@ -1,133 +1,84 @@
-# 🍛 Sweet Bite WhatsApp Food Ordering Bot
+# 🍛 Sweet Bite WhatsApp Food Ordering Bot (0 Meta Fees)
 
-A WhatsApp Cloud API food ordering bot for **Sweet Bite**.
+A **100% free** WhatsApp food ordering bot for **Sweet Bite (LAPAZ branch)** powered by **Baileys Multi-Device**.
 
-Customers can:
-
-- Say "Hi" and see the menu right away
-- Select Jollof Rice or Fried Rice
-- Select a price
-- Choose pickup or delivery
-- Provide a delivery address
-- Confirm their order
-- Receive order status notifications
-
-There is no online payment. Delivery orders are paid on delivery.
+> [!NOTE]
+> **Zero Meta API Charges**: This bot connects directly to WhatsApp via Multi-Device QR code (like WhatsApp Web). You do **NOT** need a Meta Developer account, credit card, access tokens, phone number IDs, or per-conversation Meta fees!
 
 ---
 
-# 🏪 Branch
-
-There is only **one** branch: **LAPAZ**.
-
-There is no branch-selection step — every order goes straight to the LAPAZ
-branch number.
-
-The bot uses one WhatsApp Cloud API account to send messages. The LAPAZ
-branch number is simply the recipient that new orders are sent to, and the
-number staff use to request reports.
-
----
-
-# 🍽️ Food Menu
-
-Only two items are on the menu:
-
-- Jollof Rice
-- Fried Rice
-
-## Prices
-
-| Price   |
-|---------|
-| ₵30     |
-| ₵35     |
-| ₵40     |
-| ₵45     |
-| ₵50     |
-
----
-
-# 🚚 Order Methods
-
-Customers can select:
-
-## Pick Up
-
-The customer comes to the LAPAZ branch. No delivery fee.
-
-## Delivery
-
-The customer provides their address. Payment is made to the rider when the
-food arrives. There is no online payment integration.
-
----
-
-# 🔄 Customer Flow
+## 🍽️ Customer Ordering Flow
 
 ```text
-Customer sends Hi
+Customer sends "Hi"
         ↓
-Welcome to Sweet Bite + Menu shown
+Welcome message & Menu displayed (1. Jollof Rice, 2. Fried Rice)
         ↓
-Select Food (Jollof Rice / Fried Rice)
+Select Portion Size (₵30, ₵40, ₵50, ₵60)
         ↓
-Select Price (₵30 / ₵35 / ₵40 / ₵45 / ₵50)
+Choose Method (1. Pick Up, 2. Delivery)
         ↓
-Pick Up / Delivery
+Delivery Address (if Delivery selected)
         ↓
-Delivery Address (if Delivery)
+Order Confirmation Summary
         ↓
-Order Summary
+Order Placed & Sent to LAPAZ Branch WhatsApp
         ↓
-Place Order
-        ↓
-Order sent to LAPAZ branch number
-        ↓
-Branch prepares food
-        ↓
-Customer receives status updates
+Kitchen Prepares & Customer Receives Real-time Updates!
 ```
 
+Customers can reply with either numbers (`1`, `2`, `3`, `4`) or words (`jollof`, `fried`, `pickup`, `delivery`, `confirm`, `cancel`).
+
 ---
 
-# 📊 Branch Reports
+## 👨‍🍳 Kitchen / Staff Commands
 
-The LAPAZ branch can send `report` from its configured WhatsApp number and
-choose `Daily`, `Weekly`, or `Monthly`. The bot generates and sends back a PDF
-containing the orders and total sales for that period.
+Orders are automatically sent to the configured `LAPAZ_BRANCH_NUMBER`. Kitchen staff can manage order progress directly from WhatsApp by replying:
 
-Reports use Supabase when these environment variables are configured:
+- `prepare SB-1234` — Marks order as **Preparing** and alerts the customer.
+- `ready SB-1234` — Marks order as **Food Ready** for pickup or dispatch.
+- `rider SB-1234` — Marks order as **Out for Delivery** (with Pay on Delivery reminder).
+- `pickup SB-1234` — Marks order as **Picked Up**.
 
-```text
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+---
+
+## 📊 Branch PDF Reports
+
+The branch can text `report` to request sales summaries:
+1. `1` or `daily` — Daily sales report
+2. `2` or `weekly` — Weekly sales report
+3. `3` or `monthly` — Monthly sales report
+
+The bot automatically generates and sends back a clean PDF summary containing all orders and revenue.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Install dependencies
+```bash
+npm install
 ```
 
-Run [supabase/schema.sql](supabase/schema.sql) once in the Supabase SQL
-Editor. The service-role key must stay on the server and must never be
-exposed in a browser.
-
-If Supabase isn't configured, reports fall back to in-memory orders from the
-current server session.
-
----
-
-# ⚙️ Environment Variables
-
-```text
-PORT=10000
-WHATSAPP_ACCESS_TOKEN=
-WHATSAPP_PHONE_NUMBER_ID=
-WHATSAPP_VERIFY_TOKEN=
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=
-
+### 2. Configure Environment (`.env`)
+Create a `.env` file (or copy `.env.example`):
+```env
+PORT=3000
 STORE_NAME=Sweet Bite
+LAPAZ_BRANCH_NUMBER=233241234567
 
-LAPAZ_BRANCH_NUMBER=
+# Optional Supabase database for persistent order history:
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
 ```
 
-`LAPAZ_BRANCH_NUMBER` is the WhatsApp number of the LAPAZ branch — new orders
-and staff status buttons are sent there, and it's the number staff text
-`report` from.
+### 3. Start the Bot
+```bash
+npm start
+```
+
+### 4. Link WhatsApp
+- When you start the bot, a **QR code** is printed in your terminal.
+- Or open the web dashboard in your browser: `http://localhost:3000` and view the live QR code on screen.
+- Open **WhatsApp** on your phone &rarr; **Linked Devices** &rarr; **Link a Device** &rarr; Scan the QR code.
+- That's it! Your bot is live with **$0 / ₵0 Meta fees**. Session credentials are saved locally in `./baileys_auth_info` so it reconnects automatically on reboot.

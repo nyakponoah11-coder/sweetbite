@@ -79,8 +79,8 @@
       <button onclick="switchTab('simulator')" id="nav-simulator" class="nav-btn px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-slate-400 hover:text-slate-200">
         Bot Simulator
       </button>
-      <button onclick="switchTab('webhook-info')" id="nav-webhook-info" class="nav-btn px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-slate-400 hover:text-slate-200">
-        Webhook Setup
+      <button onclick="switchTab('whatsapp-qr')" id="nav-whatsapp-qr" class="nav-btn px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-slate-400 hover:text-slate-200">
+        WhatsApp Link (QR)
       </button>
     </nav>
 
@@ -114,9 +114,9 @@
         <span class="text-slate-400">Port <span class="font-mono tabular-nums">3000</span></span>
       </div>
       <span class="text-slate-700 hidden sm:inline">|</span>
-      <div class="text-slate-400 flex items-center gap-1">
-        <span>Webhook:</span>
-        <code class="font-mono text-emerald-400/90 bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-800/40">/webhook</code>
+      <div id="whatsappBadge" onclick="openQrModal()" class="cursor-pointer flex items-center gap-1.5 px-2 py-0.5 rounded border border-amber-900/50 bg-amber-950/40 text-amber-300 hover:bg-amber-900/40 transition-colors" title="Click to view QR code">
+        <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+        <span class="font-medium">WhatsApp: Loading QR...</span>
       </div>
       <span class="text-slate-700 hidden sm:inline">|</span>
       <div class="text-slate-400" id="storageModeBadge">
@@ -374,43 +374,52 @@
     </div>
   </div>
 
-  <!-- MODAL: WEBHOOK & META CONFIGURATION HELPER -->
-  <div id="webhookModal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4">
-    <div class="bg-[#0c1222] border border-slate-800 rounded-2xl w-full max-w-lg p-6 space-y-4 shadow-2xl">
+  <!-- MODAL: WHATSAPP BAILEYS QR CODE & CONNECTION HELPER -->
+  <div id="qrModal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-[#0c1222] border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl">
       <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-        <h3 class="text-sm font-bold text-white">WhatsApp Cloud API Webhook Configuration</h3>
-        <button onclick="closeWebhookModal()" class="text-slate-400 hover:text-white">&times;</button>
+        <div class="flex items-center gap-2">
+          <span class="text-base font-bold text-white">WhatsApp Multi-Device Link</span>
+          <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800">0 Meta Fees</span>
+        </div>
+        <button onclick="closeQrModal()" class="text-slate-400 hover:text-white">&times;</button>
       </div>
 
-      <div class="space-y-3 text-xs">
-        <p class="text-slate-400">
-          Configure these values in your <strong class="text-slate-200">Meta for Developers Console</strong> under WhatsApp &rarr; Configuration:
-        </p>
-
-        <div class="space-y-1">
-          <label class="text-slate-400 font-medium">Callback URL</label>
-          <div class="flex items-center gap-2">
-            <input type="text" readonly id="webhookUrlInput" class="w-full bg-[#11192e] border border-slate-800 rounded-lg p-2 text-white font-mono text-xs select-all">
-            <button onclick="copyToClipboard('webhookUrlInput')" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs whitespace-nowrap">Copy</button>
-          </div>
+      <div class="space-y-4 text-xs">
+        <div id="qrStatusConnected" class="hidden p-4 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-center space-y-2">
+          <div class="w-10 h-10 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto text-lg">✓</div>
+          <div class="text-sm font-bold text-emerald-300">WhatsApp Is Connected!</div>
+          <p class="text-slate-400" id="qrConnectedUserText">Bot is logged in and ready to receive customer orders.</p>
         </div>
 
-        <div class="space-y-1">
-          <label class="text-slate-400 font-medium">Verify Token (WHATSAPP_VERIFY_TOKEN)</label>
-          <div class="flex items-center gap-2">
-            <input type="text" readonly value="sweetbite_verify_token" id="verifyTokenInput" class="w-full bg-[#11192e] border border-slate-800 rounded-lg p-2 text-white font-mono text-xs select-all">
-            <button onclick="copyToClipboard('verifyTokenInput')" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs whitespace-nowrap">Copy</button>
-          </div>
-        </div>
+        <div id="qrStatusPending" class="space-y-3">
+          <p class="text-slate-400">
+            Scan this QR code using WhatsApp on your phone to link your bot number:
+          </p>
 
-        <div class="p-3 bg-slate-900/80 rounded-lg border border-slate-800 text-slate-400 space-y-1.5">
-          <div class="font-semibold text-slate-200">Webhook Subscription Fields:</div>
-          <div>Subscribe to <code class="text-orange-400 bg-slate-950 px-1 py-0.5 rounded">messages</code> field on Meta WhatsApp Cloud API.</div>
+          <div class="flex justify-center p-3 bg-white rounded-xl shadow-inner border border-slate-200">
+            <img id="qrCodeImg" src="" alt="WhatsApp QR Code" class="w-64 h-64 object-contain hidden">
+            <div id="qrLoadingPlaceholder" class="w-64 h-64 flex flex-col items-center justify-center text-slate-500 text-center p-4">
+              <svg class="animate-spin h-8 w-8 text-orange-500 mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+              </svg>
+              <span>Generating QR code...</span>
+            </div>
+          </div>
+
+          <div class="p-3 bg-slate-900/80 rounded-lg border border-slate-800 text-slate-400 space-y-1">
+            <div class="font-semibold text-slate-200">How to link:</div>
+            <div>1. Open WhatsApp on your phone</div>
+            <div>2. Tap <strong>Linked Devices</strong> &rarr; <strong>Link a Device</strong></div>
+            <div>3. Point camera at the QR code above</div>
+          </div>
         </div>
       </div>
 
-      <div class="pt-3 flex justify-end">
-        <button onclick="closeWebhookModal()" class="px-4 py-1.5 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Done</button>
+      <div class="pt-3 flex justify-between items-center border-t border-slate-800">
+        <span class="text-[11px] text-slate-500">Auto-reconnects on reboot</span>
+        <button onclick="closeQrModal()" class="px-4 py-1.5 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Done</button>
       </div>
     </div>
   </div>
@@ -425,51 +434,6 @@
     let currentOrderFilter = 'all';
     let previousOrders = [];
 
-    // Initialize webhook URL based on current origin
-    document.getElementById('webhookUrlInput').value = `${window.location.origin}/webhook`;
-
-    function showToast(message, type = 'info') {
-      const container = document.getElementById('toastContainer');
-      const toast = document.createElement('div');
-      toast.className = `p-3 text-xs rounded-lg border shadow-xl flex items-center gap-2 transition-all transform duration-300 pointer-events-auto ${
-        type === 'success' ? 'bg-emerald-950 border-emerald-800 text-emerald-200' :
-        type === 'error' ? 'bg-red-950 border-red-800 text-red-200' :
-        'bg-[#11192e] border-slate-800 text-slate-200'
-      }`;
-      toast.innerHTML = `<span>${message}</span>`;
-      container.appendChild(toast);
-      setTimeout(() => {
-        toast.style.opacity = '0';
-        setTimeout(() => toast.remove(), 300);
-      }, 3500);
-    }
-
-    function formatTimeAgo(isoString) {
-      if (!isoString) return 'recently';
-      const date = new Date(isoString);
-      const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
-      if (seconds < 60) return `${Math.max(1, seconds)}s ago`;
-      const minutes = Math.floor(seconds / 60);
-      if (minutes < 60) return `${minutes}m ago`;
-      const hours = Math.floor(minutes / 60);
-      if (hours < 24) return `${hours}h ago`;
-      return date.toLocaleDateString();
-    }
-
-    function formatUptime(seconds) {
-      if (!seconds) return '0s';
-      const s = Math.floor(seconds);
-      const m = Math.floor(s / 60);
-      const h = Math.floor(m / 60);
-      if (h > 0) return `${h}h ${m % 60}m`;
-      if (m > 0) return `${m}m ${s % 60}s`;
-      return `${s}s`;
-    }
-
-    function formatMoney(amount) {
-      return `₵${Number(amount || 0).toFixed(2)}`;
-    }
-
     // TAB SWITCHING
     function switchTab(tabId) {
       document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -482,8 +446,8 @@
         activeBtn.classList.remove('text-slate-400');
       }
 
-      if (tabId === 'webhook-info') {
-        openWebhookModal();
+      if (tabId === 'whatsapp-qr') {
+        openQrModal();
       } else if (tabId === 'simulator') {
         openSimulateModal();
       } else if (tabId === 'activities') {
@@ -507,7 +471,7 @@
       renderOrders(previousOrders);
     }
 
-    // FETCH STATS
+    // FETCH STATS & QR STATUS
     async function loadStats() {
       try {
         const res = await fetch('/api/stats');
@@ -526,6 +490,37 @@
             storageElem.innerHTML = 'Storage: <span class="text-emerald-400 font-medium">Supabase Connected</span>';
           } else {
             storageElem.innerHTML = 'Storage: <span class="text-amber-400 font-medium">In-Memory Active</span>';
+          }
+
+          // WhatsApp connection status badge & QR display
+          const waBadge = document.getElementById('whatsappBadge');
+          const qrConnectedDiv = document.getElementById('qrStatusConnected');
+          const qrPendingDiv = document.getElementById('qrStatusPending');
+          const qrImg = document.getElementById('qrCodeImg');
+          const qrPlaceholder = document.getElementById('qrLoadingPlaceholder');
+
+          if (data.whatsappConnected) {
+            waBadge.className = 'cursor-pointer flex items-center gap-1.5 px-2 py-0.5 rounded border border-emerald-800/60 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/40 transition-colors';
+            waBadge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span class="font-medium">WhatsApp: Connected (+${data.whatsappUser || 'linked'})</span>`;
+            
+            qrConnectedDiv.classList.remove('hidden');
+            qrPendingDiv.classList.add('hidden');
+            document.getElementById('qrConnectedUserText').textContent = `Bot is logged in as +${data.whatsappUser || 'device'} and ready to receive customer orders (0 Meta API fees).`;
+          } else {
+            waBadge.className = 'cursor-pointer flex items-center gap-1.5 px-2 py-0.5 rounded border border-amber-800/60 bg-amber-950/40 text-amber-300 hover:bg-amber-900/40 transition-colors';
+            waBadge.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span><span class="font-medium">WhatsApp: Scan QR Code</span>`;
+
+            qrConnectedDiv.classList.add('hidden');
+            qrPendingDiv.classList.remove('hidden');
+
+            if (data.qrCodeDataUrl) {
+              qrImg.src = data.qrCodeDataUrl;
+              qrImg.classList.remove('hidden');
+              qrPlaceholder.classList.add('hidden');
+            } else {
+              qrImg.classList.add('hidden');
+              qrPlaceholder.classList.remove('hidden');
+            }
           }
         }
       } catch (err) {
@@ -883,13 +878,14 @@
       document.getElementById('exportModal').classList.remove('flex');
     }
 
-    function openWebhookModal() {
-      document.getElementById('webhookModal').classList.remove('hidden');
-      document.getElementById('webhookModal').classList.add('flex');
+    function openQrModal() {
+      document.getElementById('qrModal').classList.remove('hidden');
+      document.getElementById('qrModal').classList.add('flex');
+      loadStats();
     }
-    function closeWebhookModal() {
-      document.getElementById('webhookModal').classList.add('hidden');
-      document.getElementById('webhookModal').classList.remove('flex');
+    function closeQrModal() {
+      document.getElementById('qrModal').classList.add('hidden');
+      document.getElementById('qrModal').classList.remove('flex');
     }
 
     function copyToClipboard(elementId) {
