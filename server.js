@@ -913,6 +913,86 @@ app.get("/api/baileys/qr", (req, res) => {
   });
 });
 
+// Standalone full-screen QR code page for easy phone scanning
+app.get("/qr", (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Link Sweet Bite WhatsApp Bot</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+  <div class="bg-[#0c1222] border border-slate-800 rounded-3xl max-w-sm w-full p-6 text-center space-y-4 shadow-2xl">
+    <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-orange-500 to-amber-600 flex items-center justify-center text-white font-bold text-lg mx-auto shadow-lg shadow-orange-500/20">SB</div>
+    <div>
+      <h1 class="text-lg font-bold text-white tracking-tight">Link Sweet Bite WhatsApp</h1>
+      <p class="text-xs text-orange-400 font-medium">Lapaz Branch Bot · 0 Meta Fees</p>
+    </div>
+
+    <div id="qrBox" class="p-4 bg-white rounded-2xl flex flex-col items-center justify-center min-h-[260px] shadow-inner border border-slate-200">
+      <img id="qrImg" src="${currentQrDataUrl || ''}" alt="WhatsApp QR Code" class="${currentQrDataUrl ? '' : 'hidden'} w-64 h-64 object-contain" />
+      <div id="qrLoading" class="${currentQrDataUrl ? 'hidden' : 'flex'} flex-col items-center justify-center text-slate-500 text-xs py-10 space-y-2">
+        <div class="animate-spin h-9 w-9 border-4 border-orange-500 border-t-transparent rounded-full"></div>
+        <span>Generating WhatsApp QR code...</span>
+      </div>
+    </div>
+
+    <div id="connectedBanner" class="${isBaileysConnected ? 'flex' : 'hidden'} flex-col items-center justify-center p-5 bg-emerald-950/60 border border-emerald-800 rounded-2xl text-emerald-400 space-y-2">
+      <div class="w-10 h-10 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xl font-bold">✓</div>
+      <div class="text-sm font-bold text-emerald-300">WhatsApp Connected!</div>
+      <p class="text-xs text-slate-400" id="connectedUserLabel">Bot is active as +${connectedUser || 'device'}</p>
+    </div>
+
+    <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-800 text-slate-300 text-left text-xs space-y-1">
+      <div class="font-bold text-white">How to scan:</div>
+      <div>1. Open <strong>WhatsApp</strong> on your phone</div>
+      <div>2. Tap <strong>Linked Devices</strong> &rarr; <strong>Link a Device</strong></div>
+      <div>3. Point camera at the QR code above</div>
+    </div>
+
+    <div class="pt-1 flex items-center justify-between text-xs text-slate-500">
+      <a href="/" class="text-orange-400 hover:text-orange-300 hover:underline">← Dashboard</a>
+      <span>Auto-syncs live</span>
+    </div>
+  </div>
+
+  <script>
+    async function pollQr() {
+      try {
+        const res = await fetch('/api/baileys/qr');
+        const data = await res.json();
+        const qrImg = document.getElementById('qrImg');
+        const qrLoading = document.getElementById('qrLoading');
+        const qrBox = document.getElementById('qrBox');
+        const connectedBanner = document.getElementById('connectedBanner');
+        const userLabel = document.getElementById('connectedUserLabel');
+
+        if (data.connected) {
+          qrBox.classList.add('hidden');
+          connectedBanner.classList.remove('hidden');
+          userLabel.textContent = 'Bot is active as +' + (data.user || 'device');
+        } else {
+          qrBox.classList.remove('hidden');
+          connectedBanner.classList.add('hidden');
+          if (data.qrDataUrl) {
+            qrImg.src = data.qrDataUrl;
+            qrImg.classList.remove('hidden');
+            qrLoading.classList.add('hidden');
+          } else {
+            qrImg.classList.add('hidden');
+            qrLoading.classList.remove('hidden');
+          }
+        }
+      } catch (err) {}
+    }
+    setInterval(pollQr, 2500);
+  </script>
+</body>
+</html>`);
+});
+
 // Update order status from dashboard staff controls
 app.post("/api/orders/:id/status", async (req, res) => {
   const { id } = req.params;
