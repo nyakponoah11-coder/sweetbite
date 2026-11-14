@@ -10,7 +10,9 @@ const {
   default: makeWASocket,
   DisconnectReason,
   useMultiFileAuthState,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  jidNormalizedUser,
+  isLidUser
 } = require("@whiskeysockets/baileys");
 
 const { createReportPdf, getOrders, saveOrder, updateOrderStatus } = require("./reports");
@@ -131,7 +133,7 @@ function alreadyProcessed(messageId) {
 }
 
 /*--------------------------------------------------------------------------
- PHONE NUMBER HELPERS
+ PHONE & JID HELPERS
 --------------------------------------------------------------------------*/
 function normalizePhone(value) {
   let phone = String(value || "").replace(/\D/g, "");
@@ -140,8 +142,14 @@ function normalizePhone(value) {
   return phone;
 }
 
-function phoneToJid(phone) {
-  const clean = normalizePhone(phone);
+function formatJid(target) {
+  if (!target) return "";
+  const str = String(target).trim();
+  // If target is already a full JID (like 69746410176759@lid or 233...@s.whatsapp.net), keep it!
+  if (str.includes("@")) {
+    return jidNormalizedUser(str);
+  }
+  const clean = normalizePhone(str);
   return `${clean}@s.whatsapp.net`;
 }
 
@@ -149,9 +157,9 @@ function money(amount) {
   return `₵${Number(amount).toFixed(2)}`;
 }
 
-function getSession(phone) {
-  if (!sessions.has(phone)) {
-    sessions.set(phone, {
+function getSession(jid) {
+  if (!sessions.has(jid)) {
+    sessions.set(jid, {
       step: "WELCOME",
       food: null,
       foodAmount: null,
@@ -162,12 +170,12 @@ function getSession(phone) {
       customerName: null
     });
   }
-  return sessions.get(phone);
+  return sessions.get(jid);
 }
 
-function resetSession(phone) {
-  const existing = sessions.get(phone);
-  sessions.set(phone, {
+function resetSession(jid) {
+  const existing = sessions.get(jid);
+  sessions.set(jid, {
     step: "WELCOME",
     food: null,
     foodAmount: null,
@@ -181,7 +189,9 @@ function resetSession(phone) {
 
 function isBranchPhone(phone) {
   if (!BRANCH_NUMBER) return false;
-  return normalizePhone(phone) === normalizePhone(BRANCH_NUMBER);
+  const cleanBranch = normalizePhone(BRANCH_NUMBER);
+  const cleanInput = normalizePhone(String(phone).replace(/@.+/, ""));
+  return cleanInput === cleanBranch;
 }
 
 /*--------------------------------------------------------------------------
@@ -270,8 +280,8 @@ async function startBaileys() {
             continue;
           }
 
-          const remoteJid = msg.key.remoteJid;
-          const from = normalizePhone(remoteJid.replace(/@.+/, ""));
+          const rawJid = msg.key.remoteJid;
+          const remoteJid = jidNormalizedUser(rawJid);
           const customerName = msg.pushName || null;
 
           // Extract text from conversation, extendedTextMessage, or image caption
@@ -283,7 +293,7 @@ async function startBaileys() {
 
           if (!text || !text.trim()) continue;
 
-          await handleIncomingText(from, text.trim(), customerName);
+          await handleIncomingText(remoteJid, text.trim(), customerName);
         } catch (err) {
           logError("[baileys:upsert]", err);
         }
@@ -300,32 +310,32 @@ async function startBaileys() {
  WHATSAPP OUTBOUND SENDING (BAILEYS)
 --------------------------------------------------------------------------*/
 async function sendWhatsAppText(to, body) {
-  log("[send:text]", `-> ${to} :: ${String(body).replace(/\n/g, " | ").slice(0, 120)}`);
+  const jid = formatJid(to);
+  log("[send:text]", `-> ${jid} :: ${String(body).replace(/\n/g, " | ").slice(0, 120)}`);
 
   if (!sock || !isBaileysConnected) {
-    log("[send:mock]", `Mock dispatch to ${to} (WhatsApp client not connected yet)`);
+    log("[send:mock]", `Mock dispatch to ${jid} (WhatsApp client not connected yet)`);
     return { mock: true };
   }
 
   try {
-    const jid = phoneToJid(to);
     return await sock.sendMessage(jid, { text: body });
   } catch (error) {
-    logError(`[send:text] to ${to}`, error);
+    logError(`[send:text] to ${jid}`, error);
     return { failed: true, error: error.message };
   }
 }
 
 async function sendWhatsAppDocument(to, pdfBuffer, filename, caption) {
-  log("[send:doc]", `-> ${to} :: ${filename} (${pdfBuffer.length} bytes)`);
+  const jid = formatJid(to);
+  log("[send:doc]", `-> ${jid} :: ${filename} (${pdfBuffer.length} bytes)`);
 
   if (!sock || !isBaileysConnected) {
-    log("[send:mock]", `Mock doc dispatch to ${to} (${filename})`);
+    log("[send:mock]", `Mock doc dispatch to ${jid} (${filename})`);
     return { mock: true };
   }
 
   try {
-    const jid = phoneToJid(to);
     return await sock.sendMessage(jid, {
       document: pdfBuffer,
       mimetype: "application/pdf",
@@ -333,7 +343,7 @@ async function sendWhatsAppDocument(to, pdfBuffer, filename, caption) {
       caption: caption || filename
     });
   } catch (error) {
-    logError(`[send:doc] to ${to}`, error);
+    logError(`[send:doc] to ${jid}`, error);
     return { failed: true, error: error.message };
   }
 }
@@ -356,8 +366,11 @@ function generateOrderId() {
 }
 
 function customerLabel(order) {
-  const phone = `+${order.customerPhone}`;
-  return order.customerName ? `${order.customerName} (${phone})` : phone;
+  const isLid = isLidUser(order.customerPhone);
+  const idDisplay = isLid
+    ? `(WhatsApp ID: ${order.customerPhone.replace(/@.+/, "")})`
+    : `+${normalizePhone(order.customerPhone.replace(/@.+/, ""))}`;
+  return order.customerName ? `${order.customerName} ${idDisplay}` : idDisplay;
 }
 
 function buildOrderSummary(session) {
